@@ -1,0 +1,512 @@
+person
+man
+woman
+child
+baby
+people
+person wearing a hat
+person wearing a backpack
+person wearing a helmet
+person in a red shirt
+person in a blue shirt
+person in a white shirt
+person in a black shirt
+person in a yellow jacket
+person in a green jacket
+person in a red coat
+person in a blue coat
+person in a white dress
+person in a black dress
+person wearing sunglasses
+person riding a bicycle
+person riding a motorcycle
+person holding an umbrella
+person holding a phone
+person holding a bag
+dog
+cat
+bird
+horse
+sheep
+cow
+pig
+goat
+chicken
+duck
+goose
+turkey
+rabbit
+squirrel
+fox
+wolf
+bear
+deer
+moose
+elephant
+giraffe
+zebra
+lion
+tiger
+monkey
+gorilla
+panda
+koala
+kangaroo
+camel
+llama
+donkey
+snake
+turtle
+frog
+fish
+dolphin
+whale
+shark
+eagle
+owl
+parrot
+penguin
+butterfly
+bee
+spider
+white dog
+black dog
+brown dog
+golden dog
+white cat
+black cat
+orange cat
+gray cat
+brown horse
+white horse
+black horse
+brown cow
+black and white cow
+white sheep
+black sheep
+red bird
+blue bird
+green parrot
+white rabbit
+brown rabbit
+red fox
+black bear
+polar bear
+car
+truck
+bus
+van
+motorcycle
+bicycle
+scooter
+train
+airplane
+helicopter
+boat
+ship
+red car
+blue car
+black car
+white car
+silver car
+gray car
+green car
+yellow car
+red truck
+blue truck
+white truck
+black motorcycle
+red motorcycle
+yellow bus
+white van
+traffic light
+stop sign
+fire hydrant
+street sign
+bench
+chair
+couch
+table
+desk
+bed
+bookshelf
+cabinet
+door
+window
+lamp
+television
+computer
+laptop
+keyboard
+mouse
+cell phone
+tablet
+camera
+clock
+book
+backpack
+handbag
+suitcase
+umbrella
+hat
+helmet
+shoe
+bag
+red backpack
+blue backpack
+black backpack
+brown handbag
+black suitcase
+red umbrella
+blue umbrella
+white chair
+black chair
+wooden table
+red chair
+white couch
+blue couch
+green bottle
+water bottle
+cup
+mug
+glass
+plate
+bowl
+fork
+knife
+spoon
+wine glass
+vase
+flower
+plant
+tree
+fruit
+apple
+banana
+orange
+pizza
+cake
+red apple
+green apple
+yellow banana
+orange fruit
+red flower
+yellow flower
+blue flower
+white flower
+red ball
+blue ball
+football
+tennis ball
+baseball bat
+skateboard
+toolbox
+sky
+bridge
+house
+church
+building
+grass
+leaves
+leaf
+wall
+red house
+roof
+blue house
+white house
+hair
+face
+head
+hand
+arm
+leg
+foot
+eye
+nose
+mouth
+beard
+mustache
+glasses
+scarf
+glove
+tie
+watch
+necklace
+earring
+ring
+bracelet
+cap
+beanie
+jacket
+coat
+dress
+skirt
+shirt
+t-shirt
+jeans
+shorts
+sweater
+hoodie
+boots
+sneakers
+sandals
+uniform
+suit
+crowd
+group of people
+couple
+family
+cyclist
+pedestrian
+runner
+skier
+surfer
+swimmer
+police officer
+firefighter
+soldier
+chef
+doctor
+nurse
+construction worker
+tourist
+musician
+dancer
+baby stroller
+wheelchair
+boy
+girl
+teenager
+old man
+elderly woman
+bald man
+person sitting
+person standing
+person walking
+person running
+person smiling
+person with long hair
+person with curly hair
+person carrying a child
+person pushing a stroller
+person taking a photo
+person eating
+person drinking coffee
+person playing guitar
+person reading a book
+person riding a skateboard
+person riding a horse
+person walking a dog
+person in a yellow vest
+person in a blue uniform
+lizard
+crocodile
+crab
+lobster
+jellyfish
+starfish
+octopus
+seal
+otter
+hedgehog
+bat
+mouse animal
+rat
+hamster
+raccoon
+beaver
+leopard
+cheetah
+hyena
+rhinoceros
+hippopotamus
+buffalo
+bison
+antelope
+flamingo
+swan
+pigeon
+seagull
+crow
+sparrow
+hawk
+peacock
+rooster
+hen
+ostrich
+pelican
+duckling
+kitten
+puppy
+calf
+lamb
+ant
+fly
+mosquito
+dragonfly
+ladybug
+caterpillar
+snail
+tabby cat
+brown bear
+white swan
+yellow duck
+sleeping cat
+running dog
+taxi
+ambulance
+fire truck
+police car
+tractor
+bulldozer
+excavator
+crane
+trailer
+caravan
+jeep
+pickup truck
+sports car
+minivan
+school bus
+tram
+subway
+cable car
+sailboat
+canoe
+kayak
+ferry
+yacht
+speedboat
+hot air balloon
+drone
+wheel
+tire
+license plate
+headlight
+steering wheel
+car door
+side mirror
+road
+highway
+crosswalk
+sidewalk
+parking lot
+parking meter
+traffic cone
+road barrier
+railway
+train station
+bus stop
+airport
+runway
+street lamp
+utility pole
+power lines
+billboard
+mailbox
+trash can
+manhole cover
+speed limit sign
+one way sign
+sofa
+armchair
+stool
+shelf
+wardrobe
+dresser
+mirror
+curtain
+carpet
+pillow
+blanket
+mattress
+ceiling
+floor
+staircase
+railing
+fence
+gate
+balcony
+chimney
+fireplace
+ceiling fan
+light bulb
+chandelier
+candle
+picture frame
+painting
+poster
+refrigerator
+oven
+microwave
+stove
+sink
+faucet
+toaster
+kettle
+coffee machine
+blender
+washing machine
+bathtub
+toilet
+towel
+toothbrush
+broom
+bucket
+ladder
+hammer
+screwdriver
+wrench
+saw
+drill
+scissors
+rope
+chain
+lock
+key
+remote control
+speaker
+headphones
+microphone
+monitor
+printer
+cable
+light switch
+power outlet
+bread
+sandwich
+burger
+hot dog
+french fries
+pasta
+rice
+salad
+soup
+egg
+cheese
+sushi
+steak
+sausage
+donut
+cookie
+ice cream
+chocolate
+croissant
+grapes
+strawberry
+watermelon
+lemon
+pineapple
+peach
+pear
+cherry
+carrot
+tomato
+potato
+onion
+broccoli
+cucumber
+corn
+mushroom
+coffee
+tea

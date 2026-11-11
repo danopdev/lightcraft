@@ -121,9 +121,37 @@ pub fn default_denoise_models_dir() -> Option<PathBuf> {
         .or_else(|| config_dir().map(|d| d.join("denoise-models")))
 }
 
-/// Where the SAM 3 model is kept: `$LIGHTCRAFT_SAM3_DIR` if set, else `<config>/models/sam3`.
+/// Where the active segmentation model is kept: the generic override, the legacy SAM 3
+/// override, or `<config>/models/sam3`.
 pub fn default_sam3_dir() -> Option<PathBuf> {
-    sam3_dir(std::env::var_os("LIGHTCRAFT_SAM3_DIR"), config_dir())
+    segmentation_model_dir(std::env::var_os("LIGHTCRAFT_SEGMENTATION_MODEL_DIR"), std::env::var_os("LIGHTCRAFT_SAM3_DIR"), config_dir())
+}
+
+/// Where user-installed segmentation models live: `<config>/models`, one model per subfolder.
+pub fn default_segmentation_models_dir() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("models"))
+}
+
+/// Whether an environment override takes precedence over a user-selected segmentation model.
+pub fn segmentation_model_override_set() -> bool {
+    std::env::var_os("LIGHTCRAFT_SEGMENTATION_MODEL_DIR").is_some_and(|v| !v.is_empty())
+        || std::env::var_os("LIGHTCRAFT_SAM3_DIR").is_some_and(|v| !v.is_empty())
+}
+
+/// The selected managed model, if the persisted id still names an installed directory.
+#[cfg(not(target_arch = "wasm32"))]
+fn selected_segmentation_model(store: &Path) -> Option<PathBuf> {
+    let id = std::fs::read_to_string(store.join("active.txt")).ok()?;
+    let id = id.trim();
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+        return None;
+    }
+    let dir = store.join(id);
+    crate::segment::model_store::is_supported_model(&dir).then_some(dir)
+}
+
+fn segmentation_model_dir(generic: Option<OsString>, sam3: Option<OsString>, config: Option<PathBuf>) -> Option<PathBuf> {
+    generic.filter(|v| !v.is_empty()).map(PathBuf::from).or_else(|| sam3_dir(sam3, config))
 }
 
 /// [`default_sam3_dir`] for a given override and config folder: a non-empty override wins.
@@ -132,10 +160,22 @@ fn sam3_dir(var: Option<std::ffi::OsString>, config: Option<PathBuf>) -> Option<
 }
 
 impl Session {
-    /// Look for the SAM 3 model in the shared default folder ([`default_sam3_dir`]), and for the user's
+    /// Look for the segmentation model in the shared default folder ([`default_sam3_dir`]), and for the user's
     /// download mirrors in `<config>/models/sam3-mirrors.txt`.
     pub fn with_default_sam3_model(mut self) -> Self {
-        self.segmenter.dir = default_sam3_dir();
+        self.segmenter.models_dir = default_segmentation_models_dir();
+        self.segmenter.dir = if segmentation_model_override_set() {
+            default_sam3_dir()
+        } else {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.segmenter.models_dir.as_deref().and_then(selected_segmentation_model).or_else(default_sam3_dir)
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                default_sam3_dir()
+            }
+        };
         self.segmenter.mirrors_file = config_dir().map(|d| d.join("models").join("sam3-mirrors.txt"));
         self
     }
@@ -285,6 +325,13 @@ mod config_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generic_segmentation_model_dir_overrides_the_legacy_sam_dir() {
+        let config = PathBuf::from("cfg");
+        assert_eq!(segmentation_model_dir(Some("yolo".into()), Some("sam3".into()), Some(config.clone())), Some(PathBuf::from("yolo")));
+        assert_eq!(segmentation_model_dir(Some(std::ffi::OsString::new()), Some("sam3".into()), Some(config)), Some(PathBuf::from("sam3")));
+    }
 
     /// A non-empty `LIGHTCRAFT_SAM3_DIR` wins; unset or empty falls back to `<config>/models/sam3` (issue #619).
     #[test]

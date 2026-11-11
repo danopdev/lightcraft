@@ -17,6 +17,8 @@
 
 #[cfg(feature = "sam")]
 mod download;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod model_store;
 #[cfg(feature = "sam")]
 mod worker;
 
@@ -124,6 +126,8 @@ pub struct DownloadStatus {
 pub struct Segmenter {
     /// Where the `facebook/sam3` files live (set by the app; `None`: no AI masks).
     pub dir: Option<PathBuf>,
+    /// Where user-installed segmentation models live.
+    pub models_dir: Option<PathBuf>,
     /// The user's list of download mirrors (one base URL per line), if any.
     pub mirrors_file: Option<PathBuf>,
     /// Run requests in the background and apply them in [`Session::segment_poll`] (the
@@ -145,6 +149,7 @@ impl Default for Segmenter {
     fn default() -> Self {
         Segmenter {
             dir: None,
+            models_dir: None,
             mirrors_file: None,
             background: false,
             pending: None,
@@ -163,6 +168,34 @@ impl Segmenter {
     /// Whether this build can compute AI masks at all.
     pub const AVAILABLE: bool = cfg!(feature = "sam");
 
+    /// Select a user-installed model, or clear the selection. Environment overrides stay authoritative.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn select_model(&mut self, id: Option<&str>) -> Result<(), String> {
+        if crate::config::segmentation_model_override_set() {
+            return Err("the active model is fixed by LIGHTCRAFT_SEGMENTATION_MODEL_DIR or LIGHTCRAFT_SAM3_DIR".into());
+        }
+        let store = self.models_dir.as_deref().ok_or("this build has nowhere to keep segmentation models")?;
+        let selected = match id {
+            Some(id) => {
+                if !model_store::valid_id(id) {
+                    return Err("not a model id".into());
+                }
+                let dir = store.join(id);
+                if !model_store::is_supported_model(&dir) {
+                    return Err("that segmentation model is not installed or is invalid".into());
+                }
+                model_store::write_active(store, Some(id))?;
+                Some(dir)
+            }
+            None => {
+                model_store::write_active(store, None)?;
+                None
+            }
+        };
+        self.dir = selected.or_else(crate::config::default_sam3_dir);
+        Ok(())
+    }
+
     pub fn remote_endpoint(&self) -> Option<String> {
         #[cfg(feature = "sam")]
         return lightcraft_segment::remote::configured();
@@ -174,9 +207,40 @@ impl Segmenter {
     pub fn installed(&self) -> bool {
         #[cfg(feature = "sam")]
         if let Some(dir) = &self.dir {
-            return lightcraft_segment::is_model_dir(dir);
+            return lightcraft_segment::is_any_model_dir(dir);
         }
         false
+    }
+
+    /// Whether the configured local model is a converted YOLO export.
+    pub fn is_yolo_model(&self) -> bool {
+        #[cfg(feature = "sam")]
+        return self.dir.as_deref().is_some_and(lightcraft_segment::yolo::is_model_dir);
+        #[cfg(not(feature = "sam"))]
+        false
+    }
+
+    /// Whether the configured folder contains at least one YOLO export file.
+    pub fn has_yolo_model_candidate(&self) -> bool {
+        #[cfg(feature = "sam")]
+        return self.dir.as_deref().is_some_and(lightcraft_segment::yolo::is_candidate_dir);
+        #[cfg(not(feature = "sam"))]
+        false
+    }
+
+    /// Size reported for the configured model (the installed ONNX file, or SAM 3's known download size).
+    pub fn model_size_bytes(&self) -> Result<Option<u64>, String> {
+        if self.has_yolo_model_candidate() {
+            if !self.is_yolo_model() {
+                return Ok(None);
+            }
+            let dir = self.dir.as_deref().ok_or("YOLO model directory is not configured")?;
+            let path = dir.join("model.onnx");
+            return std::fs::metadata(&path)
+                .map(|metadata| Some(metadata.len()))
+                .map_err(|error| format!("could not read YOLO model size at {}: {error}", path.display()));
+        }
+        Ok(Some(MODEL_BYTES))
     }
 
     /// Whether requests are queued or running (loading, analyzing the photo, a click…).
@@ -259,6 +323,16 @@ impl Segmenter {
             return Err(other("AI masks are not available in this build"));
         }
         #[cfg(feature = "sam")]
+        if let Some(dir) = &self.dir
+            && lightcraft_segment::yolo::is_candidate_dir(dir)
+        {
+            return if lightcraft_segment::yolo::is_model_dir(dir) {
+                Ok(dir.clone())
+            } else {
+                Err(other(&format!("the YOLO model in {} is incomplete; expected model.onnx and lightcraft-yolo.json", dir.display())))
+            };
+        }
+        #[cfg(feature = "sam")]
         if lightcraft_segment::remote::configured().is_some() {
             return Ok(PathBuf::new());
         }
@@ -292,6 +366,9 @@ impl Segmenter {
         }
         #[cfg(feature = "sam")]
         {
+            if lightcraft_segment::yolo::is_candidate_dir(&dir) {
+                return Err("YOLO models are installed by offline conversion, not by LightCraft's SAM download".into());
+            }
             let mirrors = self.mirrors();
             if mirrors.is_empty() {
                 return Err(lightcraft_segment::fetch::no_mirrors_message());
@@ -814,6 +891,25 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "sam")]
+    #[test]
+    fn incomplete_yolo_export_is_not_reported_as_a_missing_sam_model() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
+        let dir = std::env::temp_dir().join(format!("lc-incomplete-yolo-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("model.onnx"), b"incomplete").unwrap();
+
+        let segmenter = Segmenter { dir: Some(dir.clone()), ..Segmenter::default() };
+        assert!(segmenter.has_yolo_model_candidate());
+        assert!(!segmenter.is_yolo_model());
+        assert_eq!(segmenter.model_size_bytes().unwrap(), None);
+        let error = segmenter.require_model().unwrap_err().to_string();
+        assert!(error.contains("YOLO model"), "{error}");
+        assert!(!error.contains(NOT_INSTALLED), "{error}");
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[cfg(feature = "sam")]
     #[test]

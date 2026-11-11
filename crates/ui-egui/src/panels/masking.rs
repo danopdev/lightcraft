@@ -757,18 +757,19 @@ fn component_row_menu(app: &mut LightcraftApp, ui: &mut egui::Ui, mask: u32, k: 
     }
 }
 
-/// Whether the SAM 3 model is missing in a build that could use it: then the download is
+/// Whether the configured segmentation model is missing in a build that could use it: then the download is
 /// offered (with `then` to start afterwards) instead of starting an AI mask.
 fn needs_model(app: &mut LightcraftApp, kind: &str, op: &str) -> bool {
     let seg = &app.session.segmenter;
     let missing = lightcraft_engine::segment::Segmenter::AVAILABLE && seg.remote_endpoint().is_none() && seg.dir.is_some() && !seg.installed();
-    if missing {
+    let incomplete_yolo = seg.has_yolo_model_candidate();
+    if missing && !incomplete_yolo {
         app.offer_sam_download(Some((kind, op)));
     }
-    missing
+    missing && !incomplete_yolo
 }
 
-/// Start an Object selection (SAM 3 clicks): a new mask, or a component of the selected one
+/// Start an Object selection: a new mask, or a component of the selected one
 /// combined by `op`; the photo is analyzed meanwhile (in the background).
 pub(crate) fn start_object(app: &mut LightcraftApp, ctx: &egui::Context, op: &str) {
     if needs_model(app, "object", op) {

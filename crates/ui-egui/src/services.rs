@@ -61,6 +61,8 @@ pub struct Services {
     pub pick_files: Option<PickFiles>,
     /// Local ONNX model; a manifest must accompany it.
     pub pick_denoise_model: Option<PickFiles>,
+    /// SAM 3 or converted YOLO segmentation model files / ZIP archive.
+    pub pick_segmentation_model_files: Option<PickFiles>,
     /// Open dialog for a face model (`.onnx`; Settings ▸ Faces ▸ Add a model file…).
     pub pick_model_file: Option<PickFiles>,
     /// Open dialog for preset files (`.lcpreset`, `.xmp`, `.lrtemplate`, `.zip`, `.dng`, Luminar `.lmp` / `.mplumpack`).

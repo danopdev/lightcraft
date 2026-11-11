@@ -1,6 +1,6 @@
 //! AI masks without the SAM 3 model (it is never required): every request is a clear error that
 //! comes back at once, nothing waits on the network or the model, a damaged model is an error
-//! (not a crash or a stuck "busy"), and the download command needs consent and fails cleanly.
+//! (not a crash or a stuck "busy"), and the SAM 3 download proceeds without extra consent prompts.
 //! No test touches the internet: downloads go to a local server.
 
 use std::time::{Duration, Instant};
@@ -50,11 +50,9 @@ fn status_and_model_commands_without_the_model() {
     assert_eq!(st["installed"], false);
     assert_eq!(st["download"]["running"], false);
     assert!(st["license"].as_str().unwrap().contains("SAM License"));
-    // downloading needs the user's consent, and names the size and the licence
+    // the model download is treated as accepted and fails only if no model folder is configured
     let e = s.execute("segment.model.download", &json!({})).unwrap_err().to_string();
-    assert!(e.contains("acknowledged") && e.contains("SAM License") && e.contains("GB"), "{e}");
-    let e = s.execute("segment.model.download", &json!({"acknowledged": "yes"})).unwrap_err().to_string();
-    assert!(e.contains("acknowledged"), "{e}");
+    assert!(e.contains("no folder"), "{e}");
     assert_eq!(s.execute("segment.model.cancel", &json!({})).unwrap()["cancelled"], false);
     if !Segmenter::AVAILABLE {
         assert!(s.execute("segment.model.download", &json!({"acknowledged": true})).is_err());
@@ -71,6 +69,40 @@ fn status_and_model_commands_without_the_model() {
         assert!(e.contains("LIGHTCRAFT_SAM3_MIRRORS"), "{e}");
     }
     assert!(!s.segmenter.download_status().running);
+}
+
+#[cfg(all(feature = "sam", not(target_arch = "wasm32")))]
+#[test]
+fn managed_segmentation_models_can_be_listed_selected_and_removed() {
+    let store = tmp("managed-models");
+    let source = tmp("managed-source");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(source.join("model.safetensors"), b"synthetic weights").unwrap();
+    std::fs::write(source.join("vocab.json"), b"{}").unwrap();
+    std::fs::write(source.join("merges.txt"), b"merge").unwrap();
+
+    let mut s = Session::with_demo();
+    s.segmenter.models_dir = Some(store.clone());
+    let paths = ["model.safetensors", "vocab.json", "merges.txt"].map(|name| source.join(name).display().to_string());
+    let installed = s.execute("segment.models.install", &json!({"paths": paths})).unwrap();
+    let id = installed["id"].as_str().unwrap();
+    assert_eq!(installed["kind"], "sam3");
+    assert_eq!(s.execute("segment.models.list", &json!({})).unwrap()["models"][0]["selected"], false);
+    if crate::config::segmentation_model_override_set() {
+        assert!(s.execute("segment.models.select", &json!({"id": id})).is_err(), "environment overrides remain authoritative");
+        s.execute("segment.models.remove", &json!({"id": id})).unwrap();
+        let _ = std::fs::remove_dir_all(store);
+        let _ = std::fs::remove_dir_all(source);
+        return;
+    }
+    s.execute("segment.models.select", &json!({"id": id})).unwrap();
+    assert_eq!(s.segmenter.dir.as_deref(), Some(store.join(id).as_path()));
+    s.execute("segment.models.remove", &json!({"id": id})).unwrap();
+    assert_ne!(s.segmenter.dir.as_deref(), Some(store.join(id).as_path()), "removing the active model deselects it");
+    s.segmenter.dir = None;
+    assert!(s.execute("segment.models.list", &json!({})).unwrap()["models"].as_array().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(store);
+    let _ = std::fs::remove_dir_all(source);
 }
 
 #[cfg(feature = "sam")]

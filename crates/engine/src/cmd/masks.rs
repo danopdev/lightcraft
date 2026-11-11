@@ -250,13 +250,13 @@ fn find(masks: &mut [Mask], id: u32, c: &str) -> Result<usize> {
 }
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![
+    let mut specs = vec![
         cmd!(
             "mask.add",
             "Create New Mask",
             [],
             None,
-            "{kind: brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt, ...shape params (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; object/prompt: seg? a stored segmentation, no model needed), name?} — AI kinds need the SAM 3 model; in the app a prompt returns {pending} and the mask appears when found",
+            "{kind: brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt, ...shape params (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; object/prompt: seg? a stored segmentation, no model needed), name?} — AI kinds need the configured segmentation model; in the app a prompt returns {pending} and the mask appears when found",
             has_active,
             |s, p| {
                 let kind = str_param(p, "kind").unwrap_or("radial").to_string();
@@ -461,7 +461,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Object Click",
             [],
             None,
-            "{x, y: normalized image point, exclude?: bool (⌥-click: leave this part out), id?: maskId} — a click on the selected mask's Object selection (its last Object component); SAM 3 re-segments the object → {include, exclude}",
+            "{x, y: normalized image point, exclude?: bool (⌥-click: leave this part out), id?: maskId} — a click on the selected mask's Object selection (its last Object component); the configured model updates the object mask → {include, exclude}",
             has_active,
             |s, p| {
                 let c = "mask.objectPoint";
@@ -542,7 +542,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Refine AI Mask Detail",
             [],
             None,
-            "{id?: maskId, component?} — a zoomed-in SAM 3 pass over an Object/Describe selection (default: the mask's last one): the photo around it is analyzed again at a higher resolution, in the background; the mask updates when it's done → {started}",
+            "{id?: maskId, component?} — a zoomed-in pass over an Object/Describe selection (default: the mask's last one): the photo around it is analyzed again at a higher resolution, in the background; the mask updates when it's done → {started}",
             has_active,
             |s, p| {
                 let c = "mask.refineDetail";
@@ -567,7 +567,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Prepare AI Masks",
             [],
             None,
-            "{} — load SAM 3 and analyze the active photo in the background, so Object clicks are instant → {busy}",
+            "{} — load the configured segmentation model and analyze the active photo in the background, so Object clicks are instant → {busy}",
             has_active,
             |s, _| {
                 let c = "segment.prepare";
@@ -581,10 +581,11 @@ pub fn specs() -> Vec<CommandSpec> {
             "AI Mask Model Status",
             [],
             None,
-            "{} — whether this build has AI masks, whether the SAM 3 model is installed (and where), loaded, busy, and the download's progress → {available, installed, dir, loaded, busy, analyzing, sizeBytes, license, licenseUrl, mirrors, download: {running, done, total, file, error, finished}}",
+            "{} — whether this build has AI masks, whether the configured segmentation model is installed (and where), loaded, busy, and the SAM 3 download's progress → {available, installed, dir, loaded, busy, analyzing, sizeBytes, license, licenseUrl, mirrors, download: {running, done, total, file, error, finished}}",
             super::always,
             |s, _| {
                 let g = &s.segmenter;
+                let size_bytes = g.model_size_bytes().map_err(ai_err)?;
                 Ok(json!({
                     "available": crate::segment::Segmenter::AVAILABLE,
                     "installed": g.installed(),
@@ -593,9 +594,9 @@ pub fn specs() -> Vec<CommandSpec> {
                     "loaded": g.loaded(),
                     "busy": g.busy(),
                     "analyzing": g.analyzing(),
-                    "sizeBytes": crate::segment::MODEL_BYTES,
-                    "license": crate::segment::LICENSE_NAME,
-                    "licenseUrl": crate::segment::LICENSE_URL,
+                    "sizeBytes": size_bytes,
+                    "license": if g.has_yolo_model_candidate() { None } else { Some(crate::segment::LICENSE_NAME) },
+                    "licenseUrl": if g.has_yolo_model_candidate() { None } else { Some(crate::segment::LICENSE_URL) },
                     "mirrors": g.mirrors().len(),
                     "download": g.download_status(),
                 }))
@@ -606,21 +607,9 @@ pub fn specs() -> Vec<CommandSpec> {
             "Download AI Mask Model",
             [],
             None,
-            "{acknowledged: true} — download the SAM 3 model (about 3.4 GB, Meta's SAM License, not LightCraft's) in the background, from the configured mirrors; only after the user agreed to it. Watch segment.model.status; segment.model.cancel stops it (it resumes later) → {started, installed, downloading}",
+            "{} — download the SAM 3 model (about 3.4 GB, Meta's SAM License, not LightCraft's) in the background, from the configured mirrors. Watch segment.model.status; segment.model.cancel stops it (it resumes later) → {started, installed, downloading}",
             super::always,
-            |s, p| {
-                let c = "segment.model.download";
-                if p.get("acknowledged").and_then(Value::as_bool) != Some(true) {
-                    return Err(bad(
-                        c,
-                        format!(
-                            "the SAM 3 model is a {:.1} GB download under Meta's {} ({}): pass `acknowledged: true` once the user has agreed to download it",
-                            crate::segment::MODEL_BYTES as f64 / 1e9,
-                            crate::segment::LICENSE_NAME,
-                            crate::segment::LICENSE_URL
-                        ),
-                    ));
-                }
+            |s, _| {
                 let started = s.segmenter.start_download(&s.activity).map_err(ai_err)?;
                 Ok(json!({"started": started, "installed": s.segmenter.installed(), "downloading": s.segmenter.download_status().running}))
             }
@@ -1099,7 +1088,102 @@ pub fn specs() -> Vec<CommandSpec> {
             s.set_develop(id, dd, "Delete Red Eye")?;
             ok()
         }),
+    ];
+    specs.extend(model_specs());
+    specs
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn model_specs() -> Vec<CommandSpec> {
+    vec![
+        cmd!(
+            query "segment.models.list",
+            "AI Mask Models",
+            [],
+            None,
+            "{} → {dir, active, lockedByEnvironment, models: [{id, kind, dir, sizeBytes, managed, selected}]}",
+            super::always,
+            |s, _| {
+                let store = s.segmenter.models_dir.as_deref();
+                let models = match store {
+                    Some(dir) => crate::segment::model_store::list(dir, s.segmenter.dir.as_deref()).map_err(ai_err)?,
+                    None => Vec::new(),
+                };
+                let active = s.segmenter.dir.as_ref().map(|d| d.display().to_string());
+                let rows = models
+                    .iter()
+                    .map(|model| crate::segment::model_store::row(model, s.segmenter.dir.as_deref() == Some(model.dir.as_path())))
+                    .collect::<Vec<_>>();
+                Ok(json!({
+                    "dir": store.map(|d| d.display().to_string()),
+                    "active": active,
+                    "lockedByEnvironment": crate::config::segmentation_model_override_set(),
+                    "models": rows,
+                }))
+            }
+        ),
+        cmd!(
+            query "segment.models.install",
+            "Install AI Mask Model",
+            [],
+            None,
+            "{paths: [file paths], acknowledgedSam?: true} — install a SAM 3 or converted YOLO model from its files, a model folder, or a ZIP archive",
+            super::always,
+            |s, p| {
+                let c = "segment.models.install";
+                let store = s.segmenter.models_dir.as_deref().ok_or_else(|| bad(c, "this build has nowhere to keep segmentation models"))?;
+                let paths = match p.get("paths").and_then(Value::as_array) {
+                    Some(paths) => paths.iter().map(|v| v.as_str().map(str::to_string).ok_or_else(|| bad(c, "`paths` must contain file paths"))).collect::<Result<Vec<_>>>()?,
+                    None => str_param(p, "path").map(|path| vec![path.to_string()]).ok_or_else(|| bad(c, "missing `paths`"))?,
+                };
+                let model = crate::segment::model_store::install(store, &paths, bool_or(p, "acknowledgedSam", false)).map_err(ai_err)?;
+                Ok(crate::segment::model_store::row(&model, false))
+            }
+        ),
+        cmd!(
+            query "segment.models.select",
+            "Select AI Mask Model",
+            [],
+            None,
+            "{id: model id | null} — select an installed model or stop using local AI masks",
+            super::always,
+            |s, p| {
+                let c = "segment.models.select";
+                let id = match p.get("id") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(v.as_str().ok_or_else(|| bad(c, "`id` must be a model id or null"))?),
+                };
+                s.segmenter.select_model(id).map_err(ai_err)?;
+                Ok(json!({"active": s.segmenter.dir.as_ref().map(|d| d.display().to_string())}))
+            }
+        ),
+        cmd!(
+            query "segment.models.remove",
+            "Remove AI Mask Model",
+            [],
+            None,
+            "{id: model id} — remove an installed model, deselecting it first if active",
+            super::always,
+            |s, p| {
+                let c = "segment.models.remove";
+                let id = str_param(p, "id").ok_or_else(|| bad(c, "missing `id`"))?;
+                let store = s.segmenter.models_dir.clone().ok_or_else(|| bad(c, "this build has nowhere to keep segmentation models"))?;
+                if s.segmenter.dir.as_deref() == Some(store.join(id).as_path()) {
+                    s.segmenter.select_model(None).map_err(ai_err)?;
+                    if s.segmenter.dir.as_deref() == Some(store.join(id).as_path()) {
+                        s.segmenter.dir = None;
+                    }
+                }
+                crate::segment::model_store::remove(&store, id).map_err(ai_err)?;
+                Ok(json!({"removed": id}))
+            }
+        ),
     ]
+}
+
+#[cfg(target_arch = "wasm32")]
+fn model_specs() -> Vec<CommandSpec> {
+    Vec::new()
 }
 
 /// Spot radius limits (fraction of the long edge).

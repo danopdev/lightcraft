@@ -21,8 +21,10 @@ ENVIRONMENT:
                    Without it, a portable.txt file next to the program puts the folder beside it (LightCraftData)
   LIGHTCRAFT_GPU_BACKEND=dx12|vulkan|metal|auto|off   graphics backend (default: DX12 on Windows, Metal on macOS,
                    Vulkan on Linux; off = render on the CPU); else WGPU_BACKEND. LIGHTCRAFT_GPU=0: CPU rendering.
-  LIGHTCRAFT_SAM3_DIR=DIR   the SAM 3 model for Object / Describe masks (default: <settings folder>/models/sam3;
-                   optional: LightCraft offers to download it when first needed)
+  LIGHTCRAFT_SEGMENTATION_MODEL_DIR=DIR
+                   active segmentation model for Object / Describe masks (SAM 3 or converted YOLO ONNX;
+                   default: <settings folder>/models/sam3)
+  LIGHTCRAFT_SAM3_DIR=DIR   legacy SAM 3 model folder override (used if the generic override is unset)
   LIGHTCRAFT_SAM3_MIRRORS=URL,…   where to download the SAM 3 model from (base URLs, tried in order)
   LIGHTCRAFT_LOG=info|debug   more log detail from LightCraft itself (default: info from LightCraft, warnings
                    from other crates); else RUST_LOG=<env_logger directives>. Records go to stderr and to
