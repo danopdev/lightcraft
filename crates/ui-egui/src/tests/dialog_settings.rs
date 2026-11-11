@@ -11,7 +11,6 @@ use std::time::Duration;
 use serde_json::json;
 
 use crate::headless::Headless;
-use crate::panels::settings::TABS;
 use crate::{LightcraftApp, Services};
 
 const T: Duration = Duration::from_secs(20);
@@ -77,13 +76,23 @@ fn same(a: egui::Rect, b: egui::Rect) -> bool {
 }
 
 #[test]
+fn ai_mask_tab_matches_backend_availability() {
+    let mut h = demo([900.0, 560.0]);
+    show(&mut h, "general");
+    let visible = h.app.widgets.iter().any(|(id, _)| id == "button:settingsTab-ai-masks");
+    assert_eq!(visible, lightcraft_engine::segment::Segmenter::AVAILABLE);
+    let result = h.request("engine.execute", json!({"command": "app.settings", "params": {"tab": "ai-masks"}}), T);
+    assert_eq!(result["ok"], lightcraft_engine::segment::Segmenter::AVAILABLE);
+}
+
+#[test]
 fn the_window_keeps_its_size_and_place_from_tab_to_tab() {
     for size in SIZES {
         let mut h = demo(size);
         // Given the first tab, when every other tab is opened in turn
         show(&mut h, "general");
         let first = rect(&h, "dialog:window");
-        for (tab, _) in TABS {
+        for (tab, _) in crate::panels::settings::tabs() {
             show(&mut h, tab);
             // Then the window has not moved or changed size
             let now = rect(&h, "dialog:window");
@@ -100,7 +109,7 @@ fn every_tab_keeps_its_controls_inside_the_window() {
     for size in SIZES {
         let mut h = demo(size);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, h.size);
-        for (tab, _) in TABS {
+        for (tab, _) in crate::panels::settings::tabs() {
             // When a tab is opened
             show(&mut h, tab);
             // Then the Settings window lies inside the app window
@@ -341,7 +350,7 @@ fn the_tabs_stay_put_while_a_page_scrolls() {
     let mut h = demo([900.0, 560.0]);
     show(&mut h, "import");
     let window = rect(&h, "dialog:window");
-    let tabs: Vec<egui::Rect> = TABS.iter().map(|(id, _)| rect(&h, &format!("button:settingsTab-{id}"))).collect();
+    let tabs: Vec<egui::Rect> = crate::panels::settings::tabs().map(|(id, _)| rect(&h, &format!("button:settingsTab-{id}"))).collect();
     let page_before = rect(&h, "check:settings.perCamera");
     // When the page is scrolled
     h.request("ui.move", json!({"x": window.center().x, "y": window.center().y}), T);
@@ -354,7 +363,7 @@ fn the_tabs_stay_put_while_a_page_scrolls() {
     let page_after = rect(&h, "check:settings.perCamera");
     assert!(page_after.top() < page_before.top() - 50.0, "the page scrolled: {page_before:?} -> {page_after:?}");
     // And the tabs and the window did not
-    for ((id, _), before) in TABS.iter().zip(tabs) {
+    for ((id, _), before) in crate::panels::settings::tabs().zip(tabs) {
         assert!(same(before, rect(&h, &format!("button:settingsTab-{id}"))), "tab {id} moved");
     }
     assert!(same(window, rect(&h, "dialog:window")), "the window moved");

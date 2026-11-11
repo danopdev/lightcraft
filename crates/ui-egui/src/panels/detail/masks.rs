@@ -570,7 +570,7 @@ pub(super) fn runs(samples: impl IntoIterator<Item = Option<Pos2>>) -> Vec<Vec<P
     out
 }
 
-/// Object selections (SAM 3) of the selected mask: each click, green to include, red to exclude
+/// Object selections of the selected mask: each click, green to include, red to exclude
 /// (clicks still on their way to the model included).
 fn object_marks(app: &LightcraftApp, p: &egui::Painter, map: &CanvasMap, d: &DevelopSettings, active: Option<u32>) {
     let pending = app.session.segmenter.pending_clicks().cloned();

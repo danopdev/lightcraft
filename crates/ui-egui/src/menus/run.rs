@@ -575,8 +575,8 @@ fn ui_commands_4(app: &mut LightcraftApp, _ctx: &egui::Context, id: &str, p: &Va
     let r: Result<Value, String> = match id {
         "app.settings" => {
             let tab = p.get("tab").and_then(Value::as_str).unwrap_or("general");
-            if !crate::panels::settings::TABS.iter().any(|(id, _)| *id == tab) {
-                let tabs: Vec<&str> = crate::panels::settings::TABS.iter().map(|(id, _)| *id).collect();
+            if !crate::panels::settings::tabs().any(|(id, _)| *id == tab) {
+                let tabs: Vec<&str> = crate::panels::settings::tabs().map(|(id, _)| *id).collect();
                 return Some(Err(format!("unknown settings tab `{tab}` ({})", tabs.join("|"))));
             }
             app.ui.dialog = Some(Dialog::Settings { tab: tab.into() });

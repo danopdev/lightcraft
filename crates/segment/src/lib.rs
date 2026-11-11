@@ -1,4 +1,5 @@
-//! SAM 3 (Segment Anything with Concepts, Meta, 2025) inference in pure Rust on candle.
+//! SAM 3 (Segment Anything with Concepts, Meta, 2025) inference in pure Rust on candle, plus
+//! inference for user-converted YOLO segmentation models through a native-only ONNX runtime.
 //!
 //! - **Point prompts** ([`Sam3::segment_clicks`]): positive and negative clicks select one
 //!   object, via SAM 3's interactive (SAM 2 style) prompt encoder and mask decoder.
@@ -26,6 +27,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod ai_mask;
 #[cfg(not(target_arch = "wasm32"))]
 mod clip;
 #[cfg(not(target_arch = "wasm32"))]
@@ -46,6 +48,14 @@ mod tracker;
 mod vit;
 #[cfg(not(target_arch = "wasm32"))]
 mod weights;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod yolo;
+
+pub use ai_mask::{AiMaskInterface, EncodedImage, can_load};
+#[cfg(not(target_arch = "wasm32"))]
+pub use ai_mask::{load_model, load_model_cpu, load_model_on};
+#[cfg(not(target_arch = "wasm32"))]
+pub use yolo::Yolo;
 
 use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
@@ -68,6 +78,9 @@ pub enum Error {
     #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
     Candle(#[from] candle_core::Error),
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("YOLO segmentation model: {0}")]
+    Yolo(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -91,6 +104,11 @@ pub const WEIGHTS_FILE: &str = "model.safetensors";
 /// Whether `dir` holds a usable checkpoint.
 pub fn is_model_dir(dir: &Path) -> bool {
     dir.join(WEIGHTS_FILE).is_file() && dir.join("vocab.json").is_file() && dir.join("merges.txt").is_file()
+}
+
+/// Whether `dir` contains any supported segmentation model.
+pub fn is_any_model_dir(dir: &Path) -> bool {
+    can_load(dir)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -139,6 +157,11 @@ pub struct Prediction {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Sam3 {
+    /// Whether `dir` contains the SAM 3 model files.
+    pub fn can_load(dir: &Path) -> bool {
+        is_model_dir(dir)
+    }
+
     /// Load from a directory holding `model.safetensors` (the `facebook/sam3` checkpoint in
     /// Hugging Face format), `vocab.json` and `merges.txt`.
     pub fn load(dir: &Path) -> Result<Self> {

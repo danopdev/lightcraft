@@ -109,6 +109,23 @@ pub(crate) fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::
                 .map(|p| vec![p.to_string_lossy().into_owned()])
                 .unwrap_or_default()
         })),
+        pick_segmentation_model_files: Some(Box::new(|| {
+            let (name, extensions): (&str, &[&str]) =
+                match (lightcraft_engine::segment::Segmenter::SAM_AVAILABLE, lightcraft_engine::segment::Segmenter::YOLO_AVAILABLE) {
+                    (true, true) => ("SAM 3 and YOLO segmentation model files", &["safetensors", "json", "txt", "onnx", "zip"]),
+                    (true, false) => ("SAM 3 model files", &["safetensors", "json", "txt", "zip"]),
+                    (false, true) => ("YOLO segmentation model files", &["onnx", "json", "zip"]),
+                    (false, false) => return Vec::new(),
+                };
+            file_dialog()
+                .set_title(lightcraft_ui_egui::i18n::tr("Install an AI Mask Model"))
+                .add_filter_nocase(lightcraft_ui_egui::i18n::tr(name), extensions)
+                .pick_files()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect()
+        })),
         pick_preset_files: Some(Box::new(|| {
             file_dialog()
                 .set_title(lightcraft_ui_egui::i18n::tr("Import Presets"))

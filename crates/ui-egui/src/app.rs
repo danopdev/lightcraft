@@ -605,7 +605,7 @@ impl LightcraftApp {
     /// ([`ErrorKind::ModelMissing`]), not its words.
     pub fn ai_error(&mut self, ctx: &egui::Context, e: impl Into<CommandError>, then: Option<(&str, &str)>) {
         let e = e.into();
-        if lightcraft_engine::segment::Segmenter::AVAILABLE && e.kind == ErrorKind::ModelMissing(AiModel::Sam3) {
+        if lightcraft_engine::segment::Segmenter::SAM_AVAILABLE && e.kind == ErrorKind::ModelMissing(AiModel::Sam3) {
             self.offer_sam_download(then);
         } else {
             self.toast_error(ctx, e.message);

@@ -1,5 +1,5 @@
 //! The Settings dialog (⌘,): General, Import, Performance, Display, Interface, Slideshow, Faces,
-//! AI Denoise.
+//! AI Denoise, AI Mask.
 //!
 //! Changes apply immediately (no OK/Cancel). Where they are stored:
 //! - **app settings** ([`crate::state::AppSettings`]: startup view, delete confirmation, GPU,
@@ -55,7 +55,12 @@ pub const TABS: &[(&str, &str)] = &[
     ("slideshow", "Slideshow"),
     ("faces", "Faces"),
     ("denoise", "AI Denoise"),
+    ("ai-masks", "AI Mask"),
 ];
+
+pub fn tabs() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    TABS.iter().filter(|(id, _)| *id != "ai-masks" || lightcraft_engine::segment::Segmenter::AVAILABLE)
+}
 
 /// Preview cache sizes offered (MB; 0 = automatic: room for every photo of the library).
 const CACHE_SIZES: [u32; 8] = [512, 1024, 2048, 4096, 8192, 51_200, 204_800, 0];
@@ -73,6 +78,7 @@ pub fn body(app: &mut LightcraftApp, ui: &mut egui::Ui, tab: &str) {
         "slideshow" => slideshow_tab(app, ui, &t, true),
         "faces" => crate::panels::faces::settings_tab(app, ui, &t),
         "denoise" => crate::panels::denoise::settings_tab(app, ui, &t),
+        "ai-masks" if lightcraft_engine::segment::Segmenter::AVAILABLE => crate::panels::ai_masks::settings_tab(app, ui, &t),
         _ => general_tab(app, ui, &t),
     }
 }
@@ -109,10 +115,13 @@ pub fn window(app: &mut LightcraftApp, ui: &mut egui::Ui, tab: &mut String, max_
     // The page drawn is the one that was open when the frame began: a tab clicked now opens on
     // the next frame, so a text box on the page being left is drawn once more and saves what was
     // typed in it (the click took the focus from it).
+    if tab == "ai-masks" && !lightcraft_engine::segment::Segmenter::AVAILABLE {
+        *tab = "general".into();
+    }
     let shown = tab.clone();
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-        for (id, label) in TABS {
+        for (id, label) in tabs() {
             if crate::widgets::text_button(ui, &format!("settingsTab-{id}"), label, shown == *id).clicked() {
                 *tab = id.to_string();
                 ui.ctx().request_repaint();

@@ -1738,7 +1738,7 @@ fn ai_masks_without_the_model_offer_the_download() {
     let r = h.request("ui.clickWidget", json!({"id": "maskNew:object"}), T);
     assert_eq!(r["ok"], true, "{r}");
     assert!(develop(&h).masks.is_empty());
-    if !Segmenter::AVAILABLE {
+    if !Segmenter::SAM_AVAILABLE {
         // a build without AI masks says so (a toast), no dialog
         assert_eq!(h.app.ui.dialog, None);
         return;
