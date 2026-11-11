@@ -1,0 +1,202 @@
+person
+man
+woman
+child
+baby
+people
+person wearing a hat
+person wearing a backpack
+person wearing a helmet
+person in a red shirt
+person in a blue shirt
+person in a white shirt
+person in a black shirt
+person in a yellow jacket
+person in a green jacket
+person in a red coat
+person in a blue coat
+person in a white dress
+person in a black dress
+person wearing sunglasses
+person riding a bicycle
+person riding a motorcycle
+person holding an umbrella
+person holding a phone
+person holding a bag
+dog
+cat
+bird
+horse
+sheep
+cow
+pig
+goat
+chicken
+duck
+goose
+turkey
+rabbit
+squirrel
+fox
+wolf
+bear
+deer
+moose
+elephant
+giraffe
+zebra
+lion
+tiger
+monkey
+gorilla
+panda
+koala
+kangaroo
+camel
+llama
+donkey
+snake
+turtle
+frog
+fish
+dolphin
+whale
+shark
+eagle
+owl
+parrot
+penguin
+butterfly
+bee
+spider
+white dog
+black dog
+brown dog
+golden dog
+white cat
+black cat
+orange cat
+gray cat
+brown horse
+white horse
+black horse
+brown cow
+black and white cow
+white sheep
+black sheep
+red bird
+blue bird
+green parrot
+white rabbit
+brown rabbit
+red fox
+black bear
+polar bear
+car
+truck
+bus
+van
+motorcycle
+bicycle
+scooter
+train
+airplane
+helicopter
+boat
+ship
+red car
+blue car
+black car
+white car
+silver car
+gray car
+green car
+yellow car
+red truck
+blue truck
+white truck
+black motorcycle
+red motorcycle
+yellow bus
+white van
+traffic light
+stop sign
+fire hydrant
+street sign
+bench
+chair
+couch
+table
+desk
+bed
+bookshelf
+cabinet
+door
+window
+lamp
+television
+computer
+laptop
+keyboard
+mouse
+cell phone
+tablet
+camera
+clock
+book
+backpack
+handbag
+suitcase
+umbrella
+hat
+helmet
+shoe
+red backpack
+blue backpack
+black backpack
+brown handbag
+black suitcase
+red umbrella
+blue umbrella
+white chair
+black chair
+wooden table
+red chair
+white couch
+blue couch
+green bottle
+water bottle
+cup
+mug
+glass
+plate
+bowl
+fork
+knife
+spoon
+wine glass
+vase
+flower
+plant
+tree
+fruit
+apple
+banana
+orange
+pizza
+cake
+red apple
+green apple
+yellow banana
+orange fruit
+red flower
+yellow flower
+blue flower
+white flower
+red ball
+blue ball
+football
+tennis ball
+baseball bat
+skateboard
+toolbox

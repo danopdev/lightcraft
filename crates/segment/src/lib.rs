@@ -1,4 +1,5 @@
-//! SAM 3 (Segment Anything with Concepts, Meta, 2025) inference in pure Rust on candle.
+//! SAM 3 (Segment Anything with Concepts, Meta, 2025) inference in pure Rust on candle, plus
+//! inference for user-converted YOLO segmentation models through a native-only ONNX runtime.
 //!
 //! - **Point prompts** ([`Sam3::segment_clicks`]): positive and negative clicks select one
 //!   object, via SAM 3's interactive (SAM 2 style) prompt encoder and mask decoder.
@@ -46,6 +47,8 @@ mod tracker;
 mod vit;
 #[cfg(not(target_arch = "wasm32"))]
 mod weights;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod yolo;
 
 use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
@@ -68,6 +71,9 @@ pub enum Error {
     #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
     Candle(#[from] candle_core::Error),
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("YOLO segmentation model: {0}")]
+    Yolo(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -91,6 +97,14 @@ pub const WEIGHTS_FILE: &str = "model.safetensors";
 /// Whether `dir` holds a usable checkpoint.
 pub fn is_model_dir(dir: &Path) -> bool {
     dir.join(WEIGHTS_FILE).is_file() && dir.join("vocab.json").is_file() && dir.join("merges.txt").is_file()
+}
+
+/// Whether `dir` contains any supported segmentation model.
+pub fn is_any_model_dir(dir: &Path) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    return is_model_dir(dir) || yolo::is_model_dir(dir);
+    #[cfg(target_arch = "wasm32")]
+    is_model_dir(dir)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

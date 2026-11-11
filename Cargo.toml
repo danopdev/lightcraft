@@ -77,6 +77,7 @@ dhat = "0.3" # opt-in heap profiling (lightcraft-cli --features dhat-heap) and h
 # formats
 quick-xml = "0.41"
 miniz_oxide = "0.9"
+zip = { version = "=7.4.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # codecs
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "webp"] }
@@ -102,6 +103,8 @@ avif-serialize = "0.8.6"
 # Oniguruma C library into candle-core, and the product is pure Rust.
 candle-core = { version = "=0.9.2", default-features = false }
 candle-nn = { version = "=0.9.2", default-features = false }
+# CPU inference for user-converted ONNX models (lightcraft-segment); pure Rust, MIT OR Apache-2.0.
+tract-onnx = { version = "=0.23.10", default-features = false }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "metal", "vulkan", "dx12", "wgsl"] }
 pollster = "1"
 

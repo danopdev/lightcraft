@@ -14,6 +14,71 @@ separate model. The automatic subject estimate used before Find Subject finishes
 is selected) uses existing person mattes when available, otherwise a local saliency heuristic, so
 that fallback does not require SAM 3.
 
+## Alternative: YOLO segmentation exports
+
+Native builds also run fixed-size YOLO26 and YOLOE instance-segmentation ONNX exports on the CPU.
+LightCraft does not load `.pt` checkpoints, download these models, or include their weights. Convert
+a trusted checkpoint offline with `tools/export-yolo-seg.py`; it creates a folder named after the
+checkpoint, containing `model.onnx` and `lightcraft-yolo.json`. `--output` is the parent directory
+for that folder and defaults to the directory containing the checkpoint. Add `--zip` to also create
+`<checkpoint-name>.zip` in the parent directory; the archive contains the named model folder, not
+the source checkpoint. Install Ultralytics and its export dependencies in a dedicated conversion
+environment:
+
+```sh
+python3 -m venv .venv-yolo-seg
+.venv-yolo-seg/bin/pip install -r tools/requirements-export-yolo-seg.txt
+.venv-yolo-seg/bin/python tools/export-yolo-seg.py \
+  --input-pt "$HOME/Downloads/yolo26/<segmentation-checkpoint>.pt" \
+  --output "$HOME/Downloads/lightcraft-yolo26" \
+  --zip
+```
+
+The default `--kind auto` detects `yolo26` or `yoloe` in the checkpoint filename. If it cannot
+identify the type, pass `--kind yolo26` or `--kind yoloe` explicitly.
+
+YOLOE text-prompt checkpoints (`*-seg.pt`) need prompts selected before export. The bundled
+`tools/yoloe-default-labels.txt` provides over 100 starter prompts for people, animals, objects and
+colored objects. Pass `--labels` with a text file containing one prompt per line to choose your own.
+The exporter bakes these prompts into the ONNX model and manifest; Describe matches those labels,
+and Object clicks select predicted masks. The prompts cannot be changed after export.
+
+```sh
+.venv-yolo-seg/bin/python tools/export-yolo-seg.py \
+  --input-pt "$HOME/Downloads/yoloe-11l-seg.pt" \
+  --output "$HOME/Downloads/lightcraft-yoloe" \
+  --zip
+LIGHTCRAFT_SEGMENTATION_MODEL_DIR="$HOME/Downloads/lightcraft-yoloe/yoloe-11l-seg" lightcraft
+```
+
+For custom prompts, create a UTF-8 text file with one phrase per line (for example `white dog` and
+`black dog`) and pass `--labels "$HOME/Downloads/yoloe-prompts.txt"`.
+
+For YOLO26, set the same environment variable to the checkpoint-named folder under the output
+directory. Replace the example checkpoint path with the actual checkpoint in your download folder.
+YOLO Describe accepts only the exported labels, not free-form concepts; the fixed 640 × 640 graph
+runs on the CPU. The model must be an instance-segmentation checkpoint, and its export folder must
+contain both output files. Temporary exports are removed; the source checkpoint is not modified.
+This conversion path does not support SAM 3.1, SAM 3 LiteText, or OpenVINO packages.
+
+Only convert `.pt` files you trust: loading a checkpoint in Python may execute pickle code. Keep
+the checkpoint and exported weights in a location covered by their own model licence.
+
+## Managing models
+
+Open **Settings → AI Mask** to install, choose or remove a local model. Install from multiple
+model files, a model folder, or a ZIP archive. SAM 3 needs `model.safetensors`, `vocab.json` and
+`merges.txt`; converted YOLO exports need `model.onnx` and `lightcraft-yolo.json`. ZIP imports
+accept these files in a folder inside the archive; unrelated files are ignored, duplicate model
+files and unsafe archive paths are refused. Large copies and ONNX validation run in the
+background.
+
+SAM 3 imports are treated as accepted by default. YOLO weights remain user-provided and their
+licence is the user's responsibility. Installed models are kept directly under
+`<LightCraft config>/models/<model-id>`: SAM 3 uses `models/sam3`, and a model named `abc` uses
+`models/abc`. The existing `LIGHTCRAFT_SEGMENTATION_MODEL_DIR` and `LIGHTCRAFT_SAM3_DIR`
+overrides continue to take precedence and cannot be changed in Settings.
+
 ## Using them
 
 In the Masking panel (M):
@@ -103,6 +168,7 @@ not RAW development, denoising, or upscaling. The model licence below still appl
 
 ### In the app (recommended)
 
+<<<<<<< HEAD
 The first time you pick Object, Describe or Lens Blur's Find Subject without the model, LightCraft asks:
 
 > **Download the SAM 3 model?** Object, Describe and Lens Blur's Find Subject use SAM 3, Meta's segmentation model.
@@ -117,6 +183,15 @@ one fails or stalls. Each file is written as `<name>.part` and moved into the mo
 when complete and verified — `model.safetensors` must have the exact size and SHA-256 of Meta's
 official checkpoint; a file that doesn't match is deleted, never used. If no location works, the
 dialog says why and LightCraft carries on without the model.
+
+The first time you pick Object or Describe without the model, LightCraft offers a one-time
+SAM 3 download and starts it immediately when you choose **Download**. The download runs in the
+background (close the dialog and keep working; the Masking panel shows its progress), can be
+cancelled, resumes where it stopped if interrupted (also after quitting), and tries the next
+download location when one fails or stalls. Each file is written as `<name>.part` and moved into
+the model folder only when complete and verified — `model.safetensors` must have the exact size
+and SHA-256 of Meta's official checkpoint; a file that doesn't match is deleted, never used. If
+no location works, the dialog says why and LightCraft carries on without the model.
 
 Agents and scripts use the same commands (control channel, `lightcraft-cli mcp --connect`):
 `segment.model.status`, `segment.model.download {"acknowledged": true}` (refused without the
@@ -214,6 +289,9 @@ Therefore:
 | `segment.model.cancel` | `{}` | stop it (it resumes next time) → `{cancelled}` |
 
 `remote` reports the configured endpoint, not its health. `installed` describes local weights only.
+For a YOLO export, `sizeBytes` is the ONNX file size and `license` / `licenseUrl` are null because
+LightCraft does not determine the user's model licence; SAM 3 reports its known download size and
+licence instead.
 `download` is `{running, done, total, file, error, cancelled, finished}`: `cancelled` is true when the last
 download was cancelled (its `error` says so in words; decide on the flag). An AI mask command refused because
 the model is not installed (or still downloading) fails with an error that starts with "The SAM 3 model is

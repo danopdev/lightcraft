@@ -357,8 +357,8 @@ fn main() -> eframe::Result {
                 win_files_app.started(window_renderer);
                 came_up_app.store(true, std::sync::atomic::Ordering::Relaxed);
                 let (mut session, mut problem) = open_session(in_memory, &launch, seed_demo && files.is_empty());
-                // AI masks: the SAM 3 checkpoint (facebook/sam3) in <config>/models/sam3, or LIGHTCRAFT_SAM3_DIR
-                // (never required: without it, AI masks offer to download it; see docs/ai-masks.md)
+                // AI masks: SAM 3 in <config>/models/sam3 or LIGHTCRAFT_SAM3_DIR; converted YOLO models
+                // use LIGHTCRAFT_SEGMENTATION_MODEL_DIR (never required; see docs/ai-masks.md)
                 // and the user's own download locations, one base URL per line (LIGHTCRAFT_SAM3_MIRRORS too)
                 session = session.with_default_sam3_model();
                 // HDR display: SDR unless the surface, platform and display all allow HDR

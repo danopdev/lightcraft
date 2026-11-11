@@ -25,8 +25,9 @@ use std::time::Duration;
 
 use lightcraft_develop::SegMask;
 use lightcraft_segment::{
-    Encoded, Sam3,
+    Sam3,
     remote::{self, Operation, Request, text_logits},
+    yolo::{self, Encoded as YoloEncoded, Model as YoloModel},
 };
 
 use super::{Input, Prompt, Tag};
@@ -260,9 +261,19 @@ impl Worker {
 /// The model and the last encoded photo.
 #[derive(Default)]
 struct State {
-    model: Option<(PathBuf, Sam3)>,
+    model: Option<(PathBuf, Model)>,
     cache: Option<(u64, Encoded)>,
     remote: Option<remote::Client>,
+}
+
+enum Model {
+    Sam3(Box<Sam3>),
+    Yolo(YoloModel),
+}
+
+enum Encoded {
+    Sam3(lightcraft_segment::Encoded),
+    Yolo(YoloEncoded),
 }
 
 /// Whether `later` makes `job` pointless (it asks for the same selection again).
@@ -307,7 +318,8 @@ fn run(rx: &mpsc::Receiver<Job>, shared: &Shared, idle: Duration, mut placement:
             continue;
         }
         // what a retry on the CPU needs (running the job takes them)
-        let retry = (placement == Placement::Gpu && remote::configured().is_none()).then(|| (job.kind.clone(), job.render.clone()));
+        let retry = (placement == Placement::Gpu && remote::configured().is_none() && !yolo::is_model_dir(&job.dir))
+            .then(|| (job.kind.clone(), job.render.clone()));
         let mut result = attempt(&mut state, shared, &mut job, placement);
         let mut notice = None;
         let gpu_failed = match &result {
@@ -351,7 +363,7 @@ fn attempt(state: &mut State, shared: &Shared, job: &mut Job, placement: Placeme
         Ok(r) => r,
         Err(p) => {
             let why = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_default();
-            log::error!("SAM 3 panicked: {why}");
+            log::error!("AI segmentation model panicked: {why}");
             // don't trust what the model kept: load it again next time
             *state = State::default();
             Err(Failure::Model("the AI model failed unexpectedly (it will be reloaded on the next try)".into()))
@@ -360,17 +372,24 @@ fn attempt(state: &mut State, shared: &Shared, job: &mut Job, placement: Placeme
 }
 
 /// The model for `dir`, loading it on `placement` when needed.
-fn model<'a>(state: &'a mut State, shared: &Shared, dir: &std::path::Path, placement: Placement) -> Result<&'a mut Sam3, Failure> {
+fn model<'a>(state: &'a mut State, shared: &Shared, dir: &std::path::Path, placement: Placement) -> Result<&'a mut Model, Failure> {
     if state.model.as_ref().is_none_or(|(d, _)| d != dir) {
         state.model = None;
         state.cache = None;
         let _busy = Flag::raise(&shared.encoding);
         let t = web_time::Instant::now();
-        let m = match placement {
-            Placement::Gpu => Sam3::load(dir)?,
-            Placement::Cpu => Sam3::load_cpu(dir)?,
+        let m = if yolo::is_model_dir(dir) {
+            Model::Yolo(YoloModel::load(dir)?)
+        } else {
+            Model::Sam3(Box::new(match placement {
+                Placement::Gpu => Sam3::load(dir)?,
+                Placement::Cpu => Sam3::load_cpu(dir)?,
+            }))
         };
-        log::info!("SAM 3 loaded in {:?} ({})", t.elapsed(), if m.device().is_cpu() { "CPU" } else { "GPU" });
+        match &m {
+            Model::Sam3(sam) => log::info!("SAM 3 loaded in {:?} ({})", t.elapsed(), if sam.device().is_cpu() { "CPU" } else { "GPU" }),
+            Model::Yolo(_) => log::info!("YOLO segmentation model loaded in {:?} (CPU)", t.elapsed()),
+        }
         state.model = Some((dir.to_path_buf(), m));
         shared.loaded.store(true, Ordering::SeqCst);
     }
@@ -395,24 +414,52 @@ fn render(job: &mut Job) -> Result<Input, String> {
     Ok(Input { rgb, w: img.width, h: img.height })
 }
 
+fn encode_for_model(model: &mut Model, input: &Input) -> Result<Encoded, Failure> {
+    match model {
+        Model::Sam3(model) => {
+            let mut encoded = model.encode(&input.rgb, input.w, input.h)?;
+            model.prepare_clicks(&mut encoded)?;
+            Ok(Encoded::Sam3(encoded))
+        }
+        Model::Yolo(model) => Ok(Encoded::Yolo(model.encode(&input.rgb, input.w, input.h)?)),
+    }
+}
+
 /// The model and the encoded photo `job.key` (rendering and encoding it when needed).
-fn encoded<'a>(state: &'a mut State, shared: &Shared, job: &mut Job, placement: Placement) -> Result<(&'a mut Sam3, &'a mut Encoded), Failure> {
+fn encoded<'a>(state: &'a mut State, shared: &Shared, job: &mut Job, placement: Placement) -> Result<(&'a mut Model, &'a mut Encoded), Failure> {
     model(state, shared, &job.dir, placement)?;
     if state.cache.as_ref().is_none_or(|(k, _)| *k != job.key) {
         state.cache = None;
         let input = render(job)?;
         let _busy = Flag::raise(&shared.encoding);
-        let m = state.model.as_mut().map(|(_, m)| m).ok_or("the model did not load")?;
         let t = web_time::Instant::now();
-        let mut enc = m.encode(&input.rgb, input.w, input.h)?;
-        m.prepare_clicks(&mut enc)?;
-        log::info!("SAM 3 encoded {}×{} in {:?}", input.w, input.h, t.elapsed());
+        let enc = {
+            let m = state.model.as_mut().map(|(_, m)| m).ok_or("the model did not load")?;
+            encode_for_model(m, &input)?
+        };
+        log::info!("AI mask model encoded {}×{} in {:?}", input.w, input.h, t.elapsed());
         state.cache = Some((job.key, enc));
     }
     let State { model, cache, .. } = state;
     match (model.as_mut(), cache.as_mut()) {
         (Some((_, m)), Some((_, e))) => Ok((m, e)),
         _ => Err("the model is not ready".into()),
+    }
+}
+
+fn click_logits(model: &mut Model, encoded: &mut Encoded, clicks: &[lightcraft_segment::Click]) -> Result<Option<Vec<f32>>, Failure> {
+    match (model, encoded) {
+        (Model::Sam3(model), Encoded::Sam3(encoded)) => Ok(Some(model.segment_clicks(encoded, clicks)?.logits)),
+        (Model::Yolo(model), Encoded::Yolo(encoded)) => Ok(model.segment_clicks(encoded, clicks)?.map(|p| p.logits)),
+        _ => Err("the model and encoded photo do not match".into()),
+    }
+}
+
+fn text_logits_for_model(model: &mut Model, encoded: &mut Encoded, text: &str) -> Result<Option<Vec<f32>>, Failure> {
+    match (model, encoded) {
+        (Model::Sam3(model), Encoded::Sam3(encoded)) => Ok(text_logits(model, encoded, text)?),
+        (Model::Yolo(model), Encoded::Yolo(encoded)) => Ok(model.segment_text(encoded, text)?.map(|p| p.logits)),
+        _ => Err("the model and encoded photo do not match".into()),
     }
 }
 
@@ -465,7 +512,9 @@ fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str)
 }
 
 fn run_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placement) -> Result<Option<SegMask>, Failure> {
-    if let Some(endpoint) = remote::configured() {
+    if let Some(endpoint) = remote::configured()
+        && !yolo::is_model_dir(&job.dir)
+    {
         let result = remote_job(state, shared, job, &endpoint);
         if result.is_err() {
             state.remote = None;
@@ -480,12 +529,11 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placeme
         }
         Kind::Clicks(clicks) => {
             let (m, enc) = encoded(state, shared, job, placement)?;
-            let p = m.segment_clicks(enc, &clicks)?;
-            Ok(Some(SegMask::from_logits(side, &p.logits)))
+            Ok(click_logits(m, enc, &clicks)?.map(|logits| SegMask::from_logits(side, &logits)))
         }
         Kind::Text(text) => {
             let (m, enc) = encoded(state, shared, job, placement)?;
-            Ok(text_logits(m, enc, &text)?.map(|l| SegMask::from_logits(side, &l)))
+            Ok(text_logits_for_model(m, enc, &text)?.map(|l| SegMask::from_logits(side, &l)))
         }
         Kind::Subject { focus } => {
             let (m, enc) = encoded(state, shared, job, placement)?;
@@ -506,7 +554,7 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placeme
             let input = render(job)?;
             let m = model(state, shared, &job.dir, placement)?;
             let t = web_time::Instant::now();
-            let mut enc = m.encode(&input.rgb, input.w, input.h)?;
+            let mut enc = encode_for_model(m, &input)?;
             let (rw, rh) = (region[2] - region[0], region[3] - region[1]);
             if !(rw > 0.0 && rh > 0.0) {
                 return Ok(None);
@@ -522,9 +570,9 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placeme
                     if !inside.iter().any(|c| c.positive) {
                         return Ok(None);
                     }
-                    Some(m.segment_clicks(&mut enc, &inside)?.logits)
+                    click_logits(m, &mut enc, &inside)?
                 }
-                Prompt::Text(text) => text_logits(m, &mut enc, &text)?,
+                Prompt::Text(text) => text_logits_for_model(m, &mut enc, &text)?,
             };
             log::info!("SAM 3 detail pass ({}×{}) in {:?}", input.w, input.h, t.elapsed());
             Ok(logits.map(|l| SegMask::from_logits_in(side, &l, region)))
