@@ -196,6 +196,11 @@ impl Model {
     pub fn segment_text(&self, encoded: &Encoded, text: &str) -> Result<Option<Prediction>> {
         segment_text_for(&self.labels, encoded, text)
     }
+
+    /// Merge masks whose fixed class labels match focus.
+    pub fn segment_subject(&self, encoded: &Encoded, focus: Option<(f32, f32)>) -> Result<Option<Prediction>> {
+        segment_subject_for(encoded, focus)
+    }
 }
 
 fn select_clicks(encoded: &Encoded, clicks: &[Click]) -> Result<Option<Prediction>> {
@@ -476,6 +481,14 @@ fn segment_text_for(labels: &[String], encoded: &Encoded, text: &str) -> Result<
         .detections
         .iter()
         .filter(|detection| labels.get(detection.label).is_some_and(|label| phrases.iter().any(|phrase| phrase_contains_label(phrase, label))));
+    prediction_for(encoded, matched)
+}
+
+fn segment_subject_for(encoded: &Encoded, focus: Option<(f32, f32)>) -> Result<Option<Prediction>> {
+    let matched = encoded
+        .detections
+        .iter()
+        .filter(|detection| focus.is_none() || focus.map_or(false, |(x, y)| mask_logit_at(encoded, detection, x, y) > 0.0));
     prediction_for(encoded, matched)
 }
 

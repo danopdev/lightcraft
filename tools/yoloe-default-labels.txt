@@ -151,6 +151,7 @@ umbrella
 hat
 helmet
 shoe
+bag
 red backpack
 blue backpack
 black backpack
@@ -200,3 +201,17 @@ tennis ball
 baseball bat
 skateboard
 toolbox
+sky
+bridge
+house
+church
+building
+grass
+leaves
+leaf
+wall
+red house
+roof
+blue house
+white house
+hair

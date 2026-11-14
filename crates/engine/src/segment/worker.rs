@@ -463,6 +463,14 @@ fn text_logits_for_model(model: &mut Model, encoded: &mut Encoded, text: &str) -
     }
 }
 
+fn segment_subject_logits(model: &mut Model, encoded: &mut Encoded, focus: Option<(f32, f32)>) -> Result<Option<Vec<f32>>, Failure> {
+    match (model, encoded) {
+        (Model::Sam3(model), Encoded::Sam3(encoded)) => Ok(model.segment_subject(encoded, focus, 0.5)?.map(|p| p.logits)),
+        (Model::Yolo(model), Encoded::Yolo(encoded)) => Ok(model.segment_subject(encoded, focus)?.map(|p| p.logits)),
+        _ => Err("the model and encoded photo do not match".into()),
+    }
+}
+
 fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str) -> Result<Option<SegMask>, String> {
     let _busy = Flag::raise(&shared.encoding);
     if state.remote.is_none() {
@@ -538,7 +546,7 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placeme
         Kind::Subject { focus } => {
             let (m, enc) = encoded(state, shared, job, placement)?;
             // (the reference score threshold, as Describe uses)
-            Ok(m.segment_subject(enc, focus, 0.5)?.map(|p| SegMask::from_logits(side, &p.logits)))
+            Ok(segment_subject_logits(m, enc, focus)?.map(|l| SegMask::from_logits(side, &l)))
         }
         #[cfg(test)]
         #[allow(clippy::panic)]
