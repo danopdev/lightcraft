@@ -17,7 +17,8 @@ const MANIFEST_FILE: &str = "lightcraft-yolo.json";
 const SCHEMA: &str = "lightcraft-yolo-seg";
 const MAX_MANIFEST_BYTES: u64 = 1 << 20;
 const MAX_MODEL_BYTES: u64 = 1 << 30;
-const INPUT_EDGE: usize = 640;
+const MIN_IMAGE_SIZE: usize = 32;
+const MAX_IMAGE_SIZE: usize = 2048;
 const MAX_INPUT_BYTES: usize = 256 << 20;
 const MAX_OUTPUT_VALUES: usize = 20_000_000;
 const MAX_LABELS: usize = 1024;
@@ -26,11 +27,20 @@ const CONFIDENCE: f32 = 0.25;
 const NMS_IOU: f32 = 0.5;
 const OUTSIDE_LOGIT: f32 = -16.0;
 
+// Mask tuning. Logits are positive inside an object, so these only move or smooth the final outline.
+/// Logit offset subtracted from every mask logit: positive tightens masks, negative loosens them (0.0 keeps the model's 50 % boundary).
+const MASK_BIAS: f32 = 0.0;
+/// Pixels, in model-input space, by which a detection box is grown before its mask is cropped to it (0.0 = exact box).
+const BOX_MARGIN: f32 = 0.0;
+/// Upsample the mask prototypes with a Catmull-Rom bicubic filter instead of a bilinear one for smoother outlines.
+const MASK_BICUBIC: bool = true;
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
     format: String,
     version: u32,
+    #[serde(alias = "image_side")]
     image_size: usize,
     labels: Vec<String>,
 }
@@ -68,6 +78,7 @@ struct Transform {
     scale_y: f32,
     pad_x: usize,
     pad_y: usize,
+    edge: usize,
 }
 
 /// A YOLO image inference cached for prompt and click selection.
@@ -84,6 +95,7 @@ pub struct Encoded {
 pub struct Model {
     runner: Arc<TypedRunnableModel>,
     labels: Vec<String>,
+    input_edge: usize,
 }
 
 /// Whether `dir` contains the converted model and its LightCraft manifest.
@@ -97,7 +109,7 @@ pub fn is_candidate_dir(dir: &Path) -> bool {
 }
 
 impl Model {
-    /// Load a model exported as a fixed 640 × 640 ONNX graph, plus its label manifest.
+    /// Load a model exported as a fixed square ONNX graph whose side is the manifest's `image_size`, plus its labels.
     pub fn load(dir: &Path) -> Result<Self> {
         let manifest_path = dir.join(MANIFEST_FILE);
         let manifest_file = File::open(&manifest_path).map_err(|e| Error::Yolo(format!("{}: {e}", manifest_path.display())))?;
@@ -114,6 +126,7 @@ impl Model {
         }
         let manifest: Manifest = serde_json::from_slice(&manifest_bytes).map_err(|e| Error::Yolo(format!("{}: {e}", manifest_path.display())))?;
         validate_manifest(&manifest)?;
+        let edge = manifest.image_size;
 
         let model_path = dir.join(MODEL_FILE);
         let model_file = File::open(&model_path).map_err(|e| Error::Yolo(format!("{}: {e}", model_path.display())))?;
@@ -141,8 +154,8 @@ impl Model {
             .shape
             .as_concrete()
             .ok_or_else(|| Error::Yolo("ONNX input dimensions must be fixed".into()))?;
-        if input_shape != [1, 3, INPUT_EDGE, INPUT_EDGE] {
-            return Err(Error::Yolo(format!("expected an ONNX input of [1, 3, {INPUT_EDGE}, {INPUT_EDGE}], got {input_shape:?}")));
+        if input_shape != [1, 3, edge, edge] {
+            return Err(Error::Yolo(format!("expected an ONNX input of [1, 3, {edge}, {edge}] (manifest image_size), got {input_shape:?}")));
         }
         for output in 0..outputs.len() {
             let shape = model
@@ -157,14 +170,14 @@ impl Model {
             }
         }
         let runner = model.into_runnable().map_err(|e| Error::Yolo(format!("could not prepare ONNX model: {e}")))?;
-        Ok(Self { runner, labels: manifest.labels })
+        Ok(Self { runner, labels: manifest.labels, input_edge: edge })
     }
 
     /// Run one image through the ONNX graph and cache its detections and mask prototypes.
     pub fn encode(&self, rgb: &[u8], width: usize, height: usize) -> Result<Encoded> {
-        let (input, transform) = preprocess(rgb, width, height)?;
+        let (input, transform) = preprocess(rgb, width, height, self.input_edge)?;
         let tensor =
-            Tensor::from_shape(&[1, 3, INPUT_EDGE, INPUT_EDGE], &input).map_err(|e| Error::Yolo(format!("could not prepare the image: {e}")))?;
+            Tensor::from_shape(&[1, 3, self.input_edge, self.input_edge], &input).map_err(|e| Error::Yolo(format!("could not prepare the image: {e}")))?;
         let outputs = self.runner.run(tvec!(tensor.into_tvalue())).map_err(|e| Error::Yolo(format!("YOLO inference failed: {e}")))?;
         if outputs.len() != 2 {
             return Err(Error::Yolo(format!("expected two segmentation outputs, got {}", outputs.len())));
@@ -183,7 +196,7 @@ impl Model {
             }
             parsed.push(Output { shape, values });
         }
-        let (detections, prototypes, mask_channels, mask_height, mask_width) = decode_outputs(&parsed, &self.labels)?;
+        let (detections, prototypes, mask_channels, mask_height, mask_width) = decode_outputs(&parsed, &self.labels, self.input_edge)?;
         Ok(Encoded { detections, prototypes, mask_channels, mask_height, mask_width, transform })
     }
 
@@ -231,8 +244,11 @@ fn select_clicks(encoded: &Encoded, clicks: &[Click]) -> Result<Option<Predictio
 }
 
 fn validate_manifest(manifest: &Manifest) -> Result<()> {
-    if manifest.format != SCHEMA || manifest.version != 1 || manifest.image_size != INPUT_EDGE {
-        return Err(Error::Yolo(format!("unsupported model manifest (expected {SCHEMA} v1 at {INPUT_EDGE} px)")));
+    if manifest.format != SCHEMA || manifest.version != 1 {
+        return Err(Error::Yolo(format!("unsupported model manifest (expected {SCHEMA} v1)")));
+    }
+    if !(MIN_IMAGE_SIZE..=MAX_IMAGE_SIZE).contains(&manifest.image_size) {
+        return Err(Error::Yolo(format!("manifest image_size must be between {MIN_IMAGE_SIZE} and {MAX_IMAGE_SIZE} px")));
     }
     if manifest.labels.is_empty() || manifest.labels.len() > MAX_LABELS {
         return Err(Error::Yolo(format!("model must contain between 1 and {MAX_LABELS} labels")));
@@ -247,7 +263,7 @@ fn validate_manifest(manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
-fn preprocess(rgb: &[u8], width: usize, height: usize) -> Result<(Vec<f32>, Transform)> {
+fn preprocess(rgb: &[u8], width: usize, height: usize, edge: usize) -> Result<(Vec<f32>, Transform)> {
     let source_len = width
         .checked_mul(height)
         .and_then(|n| n.checked_mul(3))
@@ -256,12 +272,12 @@ fn preprocess(rgb: &[u8], width: usize, height: usize) -> Result<(Vec<f32>, Tran
     if width == 0 || height == 0 || rgb.len() != source_len {
         return Err(Error::Yolo("RGB buffer does not match image dimensions".into()));
     }
-    let scale = (INPUT_EDGE as f64 / width as f64).min(INPUT_EDGE as f64 / height as f64);
-    let resized_width = ((width as f64 * scale).round() as usize).clamp(1, INPUT_EDGE);
-    let resized_height = ((height as f64 * scale).round() as usize).clamp(1, INPUT_EDGE);
-    let pad_x = (INPUT_EDGE - resized_width) / 2;
-    let pad_y = (INPUT_EDGE - resized_height) / 2;
-    let mut input = vec![114.0 / 255.0; 3 * INPUT_EDGE * INPUT_EDGE];
+    let scale = (edge as f64 / width as f64).min(edge as f64 / height as f64);
+    let resized_width = ((width as f64 * scale).round() as usize).clamp(1, edge);
+    let resized_height = ((height as f64 * scale).round() as usize).clamp(1, edge);
+    let pad_x = (edge - resized_width) / 2;
+    let pad_y = (edge - resized_height) / 2;
+    let mut input = vec![114.0 / 255.0; 3 * edge * edge];
     for y in 0..resized_height {
         let source_y = ((y as f64 + 0.5) * height as f64 / resized_height as f64 - 0.5).clamp(0.0, height.saturating_sub(1) as f64);
         let y0 = source_y.floor() as usize;
@@ -286,7 +302,7 @@ fn preprocess(rgb: &[u8], width: usize, height: usize) -> Result<(Vec<f32>, Tran
                 let pixel = |sx, sy| at(sx, sy).ok_or_else(|| Error::Yolo("RGB image is truncated".into()));
                 let top = pixel(x0, y0)? * (1.0 - fx) + pixel(x1, y0)? * fx;
                 let bottom = pixel(x0, y1)? * (1.0 - fx) + pixel(x1, y1)? * fx;
-                let index = channel * INPUT_EDGE * INPUT_EDGE + (y + pad_y) * INPUT_EDGE + x + pad_x;
+                let index = channel * edge * edge + (y + pad_y) * edge + x + pad_x;
                 if let Some(pixel) = input.get_mut(index) {
                     *pixel = top * (1.0 - fy) + bottom * fy;
                 }
@@ -302,11 +318,12 @@ fn preprocess(rgb: &[u8], width: usize, height: usize) -> Result<(Vec<f32>, Tran
             scale_y: resized_height as f32 / height as f32,
             pad_x,
             pad_y,
+            edge,
         },
     ))
 }
 
-fn decode_outputs(outputs: &[Output], labels: &[String]) -> Result<(Vec<Detection>, Vec<f32>, usize, usize, usize)> {
+fn decode_outputs(outputs: &[Output], labels: &[String], edge: usize) -> Result<(Vec<Detection>, Vec<f32>, usize, usize, usize)> {
     let proto_index = outputs.iter().position(|output| output.shape.len() == 4);
     let pred_index = outputs.iter().position(|output| output.shape.len() == 3);
     let (Some(proto_index), Some(pred_index)) = (proto_index, pred_index) else {
@@ -332,12 +349,12 @@ fn decode_outputs(outputs: &[Output], labels: &[String]) -> Result<(Vec<Detectio
     let pred = outputs.get(pred_index).ok_or_else(|| Error::Yolo("missing detections".into()))?;
     let prototypes = Prototypes { values: proto.values.clone(), channels: *mask_channels, height: *mask_height, width: *mask_width };
     let detections = match pred.shape.as_slice() {
-        [1, candidates, features] if *features == 6 + *mask_channels => decode_end_to_end(pred, *candidates, &prototypes, labels.len())?,
+        [1, candidates, features] if *features == 6 + *mask_channels => decode_end_to_end(pred, *candidates, &prototypes, labels.len(), edge)?,
         [1, channels, candidates] if *channels == 4 + labels.len() + *mask_channels => {
-            decode_raw(pred, *candidates, RawLayout::ChannelsFirst, &prototypes, labels.len())?
+            decode_raw(pred, *candidates, RawLayout::ChannelsFirst, &prototypes, labels.len(), edge)?
         }
         [1, candidates, channels] if *channels == 4 + labels.len() + *mask_channels => {
-            decode_raw(pred, *candidates, RawLayout::ChannelsLast, &prototypes, labels.len())?
+            decode_raw(pred, *candidates, RawLayout::ChannelsLast, &prototypes, labels.len(), edge)?
         }
         _ => {
             return Err(Error::Yolo(format!(
@@ -351,7 +368,7 @@ fn decode_outputs(outputs: &[Output], labels: &[String]) -> Result<(Vec<Detectio
     Ok((detections, prototypes.values, prototypes.channels, prototypes.height, prototypes.width))
 }
 
-fn decode_end_to_end(pred: &Output, candidates: usize, prototypes: &Prototypes, labels: usize) -> Result<Vec<Detection>> {
+fn decode_end_to_end(pred: &Output, candidates: usize, prototypes: &Prototypes, labels: usize, edge: usize) -> Result<Vec<Detection>> {
     if candidates > 100_000 {
         return Err(Error::Yolo("too many ONNX detections".into()));
     }
@@ -369,7 +386,7 @@ fn decode_end_to_end(pred: &Output, candidates: usize, prototypes: &Prototypes, 
             row.get(2).copied().unwrap_or(0.0),
             row.get(3).copied().unwrap_or(0.0),
         ];
-        let Some(bounds) = valid_bounds(bounds, INPUT_EDGE) else {
+        let Some(bounds) = valid_bounds(bounds, edge) else {
             continue;
         };
         let coefficients = row.get(6..features).ok_or_else(|| Error::Yolo("detection is missing mask coefficients".into()))?.to_vec();
@@ -378,7 +395,7 @@ fn decode_end_to_end(pred: &Output, candidates: usize, prototypes: &Prototypes, 
     Ok(finish_detections(detections, false))
 }
 
-fn decode_raw(pred: &Output, candidates: usize, layout: RawLayout, prototypes: &Prototypes, labels: usize) -> Result<Vec<Detection>> {
+fn decode_raw(pred: &Output, candidates: usize, layout: RawLayout, prototypes: &Prototypes, labels: usize, edge: usize) -> Result<Vec<Detection>> {
     if candidates > 100_000 {
         return Err(Error::Yolo("too many ONNX detections".into()));
     }
@@ -410,7 +427,7 @@ fn decode_raw(pred: &Output, candidates: usize, layout: RawLayout, prototypes: &
             value(3).ok_or_else(|| Error::Yolo("detection output is truncated".into()))?,
         );
         let bounds = [cx - width / 2.0, cy - height / 2.0, cx + width / 2.0, cy + height / 2.0];
-        let Some(bounds) = valid_bounds(bounds, INPUT_EDGE) else {
+        let Some(bounds) = valid_bounds(bounds, edge) else {
             continue;
         };
         let mut coefficients = Vec::with_capacity(prototypes.channels);
@@ -529,20 +546,20 @@ fn mask_logits(encoded: &Encoded, detection: &Detection) -> Result<Vec<f32>> {
     }
     let mut logits = vec![OUTSIDE_LOGIT; MASK_SIDE * MASK_SIDE];
     for y in 0..MASK_SIDE {
-        let source_y = y as f32 / MASK_SIDE as f32 * encoded.transform.source_height as f32;
+        let source_y = (y as f32 + 0.5) / MASK_SIDE as f32 * encoded.transform.source_height as f32;
         let model_y = source_y * encoded.transform.scale_y + encoded.transform.pad_y as f32;
         for x in 0..MASK_SIDE {
-            let source_x = x as f32 / MASK_SIDE as f32 * encoded.transform.source_width as f32;
+            let source_x = (x as f32 + 0.5) / MASK_SIDE as f32 * encoded.transform.source_width as f32;
             let model_x = source_x * encoded.transform.scale_x + encoded.transform.pad_x as f32;
-            if model_x < detection.bounds[0] || model_y < detection.bounds[1] || model_x >= detection.bounds[2] || model_y >= detection.bounds[3] {
+            if !inside_box(&detection.bounds, model_x, model_y) {
                 continue;
             }
-            let px = model_x / INPUT_EDGE as f32 * encoded.mask_width as f32 - 0.5;
-            let py = model_y / INPUT_EDGE as f32 * encoded.mask_height as f32 - 0.5;
-            if let Some(logit) = sample(&low_res, encoded.mask_width, encoded.mask_height, px, py)
+            let px = model_x / encoded.transform.edge as f32 * encoded.mask_width as f32 - 0.5;
+            let py = model_y / encoded.transform.edge as f32 * encoded.mask_height as f32 - 0.5;
+            if let Some(logit) = sample_mask(&low_res, encoded.mask_width, encoded.mask_height, px, py)
                 && let Some(out) = logits.get_mut(y * MASK_SIDE + x)
             {
-                *out = logit.clamp(-16.0, 16.0);
+                *out = (logit - MASK_BIAS).clamp(-16.0, 16.0);
             }
         }
     }
@@ -552,12 +569,12 @@ fn mask_logits(encoded: &Encoded, detection: &Detection) -> Result<Vec<f32>> {
 fn mask_logit_at(encoded: &Encoded, detection: &Detection, x: f32, y: f32) -> f32 {
     let model_x = x * encoded.transform.source_width as f32 * encoded.transform.scale_x + encoded.transform.pad_x as f32;
     let model_y = y * encoded.transform.source_height as f32 * encoded.transform.scale_y + encoded.transform.pad_y as f32;
-    if model_x < detection.bounds[0] || model_y < detection.bounds[1] || model_x >= detection.bounds[2] || model_y >= detection.bounds[3] {
+    if !inside_box(&detection.bounds, model_x, model_y) {
         return OUTSIDE_LOGIT;
     }
     let proto_len = encoded.mask_height.saturating_mul(encoded.mask_width);
-    let px = model_x / INPUT_EDGE as f32 * encoded.mask_width as f32 - 0.5;
-    let py = model_y / INPUT_EDGE as f32 * encoded.mask_height as f32 - 0.5;
+    let px = model_x / encoded.transform.edge as f32 * encoded.mask_width as f32 - 0.5;
+    let py = model_y / encoded.transform.edge as f32 * encoded.mask_height as f32 - 0.5;
     let mut logit = 0.0;
     for channel in 0..encoded.mask_channels {
         let Some(start) = channel.checked_mul(proto_len) else {
@@ -569,7 +586,7 @@ fn mask_logit_at(encoded: &Encoded, detection: &Detection, x: f32, y: f32) -> f3
         let Some(plane) = encoded.prototypes.get(start..end) else {
             return OUTSIDE_LOGIT;
         };
-        let Some(value) = sample(plane, encoded.mask_width, encoded.mask_height, px, py) else {
+        let Some(value) = sample_mask(plane, encoded.mask_width, encoded.mask_height, px, py) else {
             return OUTSIDE_LOGIT;
         };
         let Some(coefficient) = detection.coefficients.get(channel) else {
@@ -577,7 +594,48 @@ fn mask_logit_at(encoded: &Encoded, detection: &Detection, x: f32, y: f32) -> f3
         };
         logit += value * coefficient;
     }
-    logit.clamp(-16.0, 16.0)
+    (logit - MASK_BIAS).clamp(-16.0, 16.0)
+}
+
+/// Whether a model-space point lies inside a detection box grown by `BOX_MARGIN`.
+fn inside_box(bounds: &[f32; 4], x: f32, y: f32) -> bool {
+    x >= bounds[0] - BOX_MARGIN && y >= bounds[1] - BOX_MARGIN && x < bounds[2] + BOX_MARGIN && y < bounds[3] + BOX_MARGIN
+}
+
+fn sample_mask(data: &[f32], width: usize, height: usize, x: f32, y: f32) -> Option<f32> {
+    if MASK_BICUBIC { sample_cubic(data, width, height, x, y) } else { sample(data, width, height, x, y) }
+}
+
+fn cubic_weights(t: f32) -> [f32; 4] {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    [-0.5 * t3 + t2 - 0.5 * t, 1.5 * t3 - 2.5 * t2 + 1.0, -1.5 * t3 + 2.0 * t2 + 0.5 * t, 0.5 * t3 - 0.5 * t2]
+}
+
+/// Catmull-Rom bicubic sample with edge clamping.
+fn sample_cubic(data: &[f32], width: usize, height: usize, x: f32, y: f32) -> Option<f32> {
+    if width == 0 || height == 0 || !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    let x = x.clamp(0.0, (width - 1) as f32);
+    let y = y.clamp(0.0, (height - 1) as f32);
+    let (x0, y0) = (x.floor() as isize, y.floor() as isize);
+    let weights_x = cubic_weights(x - x0 as f32);
+    let weights_y = cubic_weights(y - y0 as f32);
+    let at = |sx: isize, sy: isize| {
+        let sx = sx.clamp(0, width as isize - 1) as usize;
+        let sy = sy.clamp(0, height as isize - 1) as usize;
+        data.get(sy.checked_mul(width)?.checked_add(sx)?).copied()
+    };
+    let mut value = 0.0;
+    for (j, weight_y) in weights_y.iter().enumerate() {
+        let mut row = 0.0;
+        for (i, weight_x) in weights_x.iter().enumerate() {
+            row += at(x0 + i as isize - 1, y0 + j as isize - 1)? * weight_x;
+        }
+        value += row * weight_y;
+    }
+    Some(value)
 }
 
 fn sample(data: &[f32], width: usize, height: usize, x: f32, y: f32) -> Option<f32> {
@@ -615,7 +673,7 @@ mod tests {
             mask_channels: 1,
             mask_height: 4,
             mask_width: 4,
-            transform: Transform { source_width: 640, source_height: 640, scale_x: 1.0, scale_y: 1.0, pad_x: 0, pad_y: 0 },
+            transform: Transform { source_width: 640, source_height: 640, scale_x: 1.0, scale_y: 1.0, pad_x: 0, pad_y: 0, edge: 640 },
         }
     }
 
@@ -625,18 +683,18 @@ mod tests {
 
     #[test]
     fn preprocess_letterboxes_and_rejects_bad_rgb_buffers() {
-        let (input, transform) = preprocess(&[255, 0, 0, 0, 255, 0], 2, 1).unwrap();
-        assert_eq!(input.len(), 3 * INPUT_EDGE * INPUT_EDGE);
+        let (input, transform) = preprocess(&[255, 0, 0, 0, 255, 0], 2, 1, 640).unwrap();
+        assert_eq!(input.len(), 3 * 640 * 640);
         assert_eq!((transform.pad_x, transform.pad_y), (0, 160));
         assert_eq!((transform.source_width, transform.source_height), (2, 1));
-        assert!(preprocess(&[0, 1, 2], 2, 1).is_err());
+        assert!(preprocess(&[0, 1, 2], 2, 1, 640).is_err());
     }
 
     #[test]
     fn decodes_yolo26_end_to_end_masks_and_filters_invalid_rows() {
         let pred = output(vec![1, 2, 7], vec![10.0, 20.0, 30.0, 40.0, 0.95, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0]);
         let proto = output(vec![1, 1, 1, 1], vec![2.0]);
-        let (detections, _, channels, height, width) = decode_outputs(&[pred, proto], &labels()).unwrap();
+        let (detections, _, channels, height, width) = decode_outputs(&[pred, proto], &labels(), 640).unwrap();
         assert_eq!((channels, height, width), (1, 1, 1));
         assert_eq!(detections.len(), 1);
         assert_eq!(detections[0].label, 1);
@@ -666,7 +724,7 @@ mod tests {
 
         let pred = output(vec![1, 7, 3], values);
         let proto = output(vec![1, 1, 1, 1], vec![1.0]);
-        let (detections, _, _, _, _) = decode_outputs(&[pred, proto], &labels()).unwrap();
+        let (detections, _, _, _, _) = decode_outputs(&[pred, proto], &labels(), 640).unwrap();
         assert_eq!(detections.len(), 2);
         assert_eq!(detections.iter().map(|detection| detection.label).collect::<Vec<_>>(), [1, 0]);
     }
@@ -688,7 +746,7 @@ mod tests {
         }
         let pred = output(vec![1, 7, 3], values);
         let proto = output(vec![1, 1, 1, 1], vec![1.0]);
-        let (detections, _, _, _, _) = decode_outputs(&[proto, pred], &labels()).unwrap();
+        let (detections, _, _, _, _) = decode_outputs(&[proto, pred], &labels(), 640).unwrap();
         assert_eq!(detections.len(), 1);
         assert_eq!(detections[0].label, 0);
     }
@@ -702,5 +760,39 @@ mod tests {
         let clicks = [Click { x: 0.5, y: 0.5, positive: true }];
         assert!(select_clicks(&encoded, &clicks).unwrap().is_some());
         assert!(select_clicks(&encoded, &[Click { x: f32::NAN, y: 0.5, positive: true }]).is_err());
+    }
+
+    #[test]
+    fn preprocess_uses_the_requested_edge() {
+        let (input, transform) = preprocess(&[255, 0, 0, 0, 255, 0], 2, 1, 1024).unwrap();
+        assert_eq!(input.len(), 3 * 1024 * 1024);
+        assert_eq!((transform.pad_x, transform.pad_y, transform.edge), (0, 256, 1024));
+    }
+
+    #[test]
+    fn manifest_image_size_is_validated_and_accepts_the_image_side_alias() {
+        let manifest = |size: usize| Manifest { format: SCHEMA.into(), version: 1, image_size: size, labels: vec!["person".into()] };
+        assert!(validate_manifest(&manifest(640)).is_ok());
+        assert!(validate_manifest(&manifest(1280)).is_ok());
+        assert!(validate_manifest(&manifest(0)).is_err());
+        assert!(validate_manifest(&manifest(MAX_IMAGE_SIZE + 1)).is_err());
+        let json = format!(r#"{{"format":"{SCHEMA}","version":1,"image_side":1024,"labels":["person"]}}"#);
+        assert_eq!(serde_json::from_str::<Manifest>(&json).unwrap().image_size, 1024);
+    }
+
+    #[test]
+    fn cubic_sampling_is_exact_on_grid_points_and_preserves_constants() {
+        let data: Vec<f32> = (0..16).map(|v| v as f32).collect();
+        assert!((sample_cubic(&data, 4, 4, 2.0, 1.0).unwrap() - 6.0).abs() < 1e-5);
+        assert!((sample_cubic(&[3.0; 16], 4, 4, 1.3, 2.7).unwrap() - 3.0).abs() < 1e-5);
+        assert!(sample_cubic(&data, 4, 4, f32::NAN, 1.0).is_none());
+    }
+
+    #[test]
+    fn box_test_applies_the_margin() {
+        let bounds = [10.0, 10.0, 20.0, 20.0];
+        assert!(inside_box(&bounds, 10.0 - BOX_MARGIN, 15.0));
+        assert!(!inside_box(&bounds, 20.0 + BOX_MARGIN, 15.0));
+        assert!(!inside_box(&bounds, 9.0 - BOX_MARGIN, 15.0));
     }
 }

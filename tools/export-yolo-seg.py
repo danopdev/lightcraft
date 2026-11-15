@@ -9,6 +9,11 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+MIN_IMGSZ = 32
+MAX_IMGSZ = 2048  # must match MAX_IMAGE_SIZE in the Rust runtime
+RUNTIME_MAX_OUTPUT_VALUES = 20_000_000  # must match MAX_OUTPUT_VALUES in the Rust runtime
+MASK_CHANNELS = 32  # prototype channels of Ultralytics segmentation heads
+
 
 def names_from_model(model):
     names = model.names
@@ -48,6 +53,29 @@ def validate_labels(labels):
         raise ValueError("labels must be unique, non-empty text of at most 256 UTF-8 bytes")
 
 
+def confirm_replace(path):
+    """Ask whether an existing output should be replaced; anything but y/yes (or no terminal) means no."""
+    kind = "folder" if path.is_dir() else "file"
+    try:
+        answer = input(f"The {kind} already exists: {path}\nReplace it? [y/N] ")
+    except EOFError:
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
+def remove_path(path):
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def estimated_raw_output_values(label_count, imgsz):
+    """Approximate size of the raw (nms=False) detection output of a YOLOE segmentation export."""
+    candidates = sum((imgsz // stride) ** 2 for stride in (8, 16, 32))
+    return (4 + label_count + MASK_CHANNELS) * candidates
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -56,7 +84,14 @@ def main():
         default="auto",
         help="model type (default: infer from checkpoint filename)",
     )
-    parser.add_argument("--input-pt", type=Path, required=True, help="trusted .pt checkpoint")
+    parser.add_argument("-i", "--input-pt", type=Path, required=True, help="trusted .pt checkpoint")
+    parser.add_argument(
+        "-s",
+        "--imgsz",
+        type=int,
+        default=640,
+        help=f"square model input size in pixels, a multiple of 32 between {MIN_IMGSZ} and {MAX_IMGSZ} (default: 640)",
+    )
     parser.add_argument(
         "--labels",
         type=Path,
@@ -68,6 +103,7 @@ def main():
         help="parent directory for the model folder (default: directory containing --input-pt)",
     )
     parser.add_argument(
+        "-z",
         "--zip",
         action="store_true",
         dest="create_zip",
@@ -77,6 +113,8 @@ def main():
 
     if not args.input_pt.is_file():
         parser.error(f"checkpoint not found: {args.input_pt}")
+    if not MIN_IMGSZ <= args.imgsz <= MAX_IMGSZ or args.imgsz % 32 != 0:
+        parser.error(f"--imgsz must be a multiple of 32 between {MIN_IMGSZ} and {MAX_IMGSZ}, got {args.imgsz}")
     if args.output is None:
         args.output = args.input_pt.parent
     model_name = args.input_pt.stem
@@ -92,11 +130,8 @@ def main():
         parser.error("--labels is only used with YOLOE")
     if args.output.exists() and not args.output.is_dir():
         parser.error(f"output is not a directory: {args.output}")
-    if model_dir.exists():
-        parser.error(f"model output already exists: {model_dir}")
     zip_path = args.output / f"{model_name}.zip"
-    if args.create_zip and zip_path.exists():
-        parser.error(f"ZIP output already exists: {zip_path}")
+    protected = [args.input_pt.resolve()]
     if args.kind == "yoloe":
         labels_path = args.labels or Path(__file__).resolve().with_name("yoloe-default-labels.txt")
         try:
@@ -104,6 +139,24 @@ def main():
             validate_labels(labels)
         except (OSError, ValueError) as error:
             parser.error(str(error))
+        protected.append(labels_path.resolve())
+        estimate = estimated_raw_output_values(len(labels), args.imgsz)
+        if estimate > RUNTIME_MAX_OUTPUT_VALUES:
+            print(
+                f"Warning: with {len(labels)} labels at imgsz {args.imgsz} the ONNX output has about {estimate:,} values; "
+                f"the Rust runtime rejects outputs above {RUNTIME_MAX_OUTPUT_VALUES:,}. "
+                "Use a smaller --imgsz or fewer labels."
+            )
+    for path in protected:
+        if model_dir.resolve() in path.parents:
+            parser.error(f"{path} is inside {model_dir}, which would be replaced; move it elsewhere first")
+
+    replace_dir = model_dir.exists()
+    if replace_dir and not confirm_replace(model_dir):
+        parser.exit(1, "Aborted: the existing model output was kept.\n")
+    replace_zip = args.create_zip and zip_path.exists()
+    if replace_zip and not confirm_replace(zip_path):
+        parser.exit(1, "Aborted: the existing ZIP archive was kept.\n")
 
     print("Warning: loading a .pt checkpoint can execute pickle code; only convert a checkpoint you trust.")
     if args.kind == "yoloe":
@@ -130,7 +183,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix=".lightcraft-yolo-export-", dir=args.output) as staging:
         exported = model.export(
             format="onnx",
-            imgsz=640,
+            imgsz=args.imgsz,
             batch=1,
             dynamic=False,
             nms=False,
@@ -151,7 +204,7 @@ def main():
         finally:
             if exported.resolve() != staged_model.resolve():
                 exported.unlink(missing_ok=True)
-        manifest = {"format": "lightcraft-yolo-seg", "version": 1, "image_size": 640, "labels": labels}
+        manifest = {"format": "lightcraft-yolo-seg", "version": 1, "image_size": args.imgsz, "labels": labels}
         staged_manifest = Path(staging) / "lightcraft-yolo.json"
         staged_manifest.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         staged_model_dir = Path(staging) / "bundle"
@@ -163,8 +216,12 @@ def main():
             with zipfile.ZipFile(staged_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 for path in sorted(staged_model_dir.iterdir()):
                     archive.write(path, arcname=f"{model_name}/{path.name}")
+        if replace_dir:
+            remove_path(model_dir)
         os.replace(staged_model_dir, model_dir)
         if args.create_zip:
+            if replace_zip:
+                remove_path(zip_path)
             os.replace(staged_zip, zip_path)
 
     print(f"LightCraft model written to {model_dir}")

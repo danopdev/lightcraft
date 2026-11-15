@@ -215,3 +215,298 @@ roof
 blue house
 white house
 hair
+face
+head
+hand
+arm
+leg
+foot
+eye
+nose
+mouth
+beard
+mustache
+glasses
+scarf
+glove
+tie
+watch
+necklace
+earring
+ring
+bracelet
+cap
+beanie
+jacket
+coat
+dress
+skirt
+shirt
+t-shirt
+jeans
+shorts
+sweater
+hoodie
+boots
+sneakers
+sandals
+uniform
+suit
+crowd
+group of people
+couple
+family
+cyclist
+pedestrian
+runner
+skier
+surfer
+swimmer
+police officer
+firefighter
+soldier
+chef
+doctor
+nurse
+construction worker
+tourist
+musician
+dancer
+baby stroller
+wheelchair
+boy
+girl
+teenager
+old man
+elderly woman
+bald man
+person sitting
+person standing
+person walking
+person running
+person smiling
+person with long hair
+person with curly hair
+person carrying a child
+person pushing a stroller
+person taking a photo
+person eating
+person drinking coffee
+person playing guitar
+person reading a book
+person riding a skateboard
+person riding a horse
+person walking a dog
+person in a yellow vest
+person in a blue uniform
+lizard
+crocodile
+crab
+lobster
+jellyfish
+starfish
+octopus
+seal
+otter
+hedgehog
+bat
+mouse animal
+rat
+hamster
+raccoon
+beaver
+leopard
+cheetah
+hyena
+rhinoceros
+hippopotamus
+buffalo
+bison
+antelope
+flamingo
+swan
+pigeon
+seagull
+crow
+sparrow
+hawk
+peacock
+rooster
+hen
+ostrich
+pelican
+duckling
+kitten
+puppy
+calf
+lamb
+ant
+fly
+mosquito
+dragonfly
+ladybug
+caterpillar
+snail
+tabby cat
+brown bear
+white swan
+yellow duck
+sleeping cat
+running dog
+taxi
+ambulance
+fire truck
+police car
+tractor
+bulldozer
+excavator
+crane
+trailer
+caravan
+jeep
+pickup truck
+sports car
+minivan
+school bus
+tram
+subway
+cable car
+sailboat
+canoe
+kayak
+ferry
+yacht
+speedboat
+hot air balloon
+drone
+wheel
+tire
+license plate
+headlight
+steering wheel
+car door
+side mirror
+road
+highway
+crosswalk
+sidewalk
+parking lot
+parking meter
+traffic cone
+road barrier
+railway
+train station
+bus stop
+airport
+runway
+street lamp
+utility pole
+power lines
+billboard
+mailbox
+trash can
+manhole cover
+speed limit sign
+one way sign
+sofa
+armchair
+stool
+shelf
+wardrobe
+dresser
+mirror
+curtain
+carpet
+pillow
+blanket
+mattress
+ceiling
+floor
+staircase
+railing
+fence
+gate
+balcony
+chimney
+fireplace
+ceiling fan
+light bulb
+chandelier
+candle
+picture frame
+painting
+poster
+refrigerator
+oven
+microwave
+stove
+sink
+faucet
+toaster
+kettle
+coffee machine
+blender
+washing machine
+bathtub
+toilet
+towel
+toothbrush
+broom
+bucket
+ladder
+hammer
+screwdriver
+wrench
+saw
+drill
+scissors
+rope
+chain
+lock
+key
+remote control
+speaker
+headphones
+microphone
+monitor
+printer
+cable
+light switch
+power outlet
+bread
+sandwich
+burger
+hot dog
+french fries
+pasta
+rice
+salad
+soup
+egg
+cheese
+sushi
+steak
+sausage
+donut
+cookie
+ice cream
+chocolate
+croissant
+grapes
+strawberry
+watermelon
+lemon
+pineapple
+peach
+pear
+cherry
+carrot
+tomato
+potato
+onion
+broccoli
+cucumber
+corn
+mushroom
+coffee
+tea
