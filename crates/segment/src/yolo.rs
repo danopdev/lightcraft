@@ -92,11 +92,13 @@ pub struct Encoded {
 }
 
 /// CPU inference from a fixed-size ONNX instance-segmentation export.
-pub struct Model {
+pub struct Yolo {
     runner: Arc<TypedRunnableModel>,
     labels: Vec<String>,
     input_edge: usize,
 }
+
+pub type Model = Yolo;
 
 /// Whether `dir` contains the converted model and its LightCraft manifest.
 pub fn is_model_dir(dir: &Path) -> bool {
@@ -108,7 +110,17 @@ pub fn is_candidate_dir(dir: &Path) -> bool {
     dir.join(MODEL_FILE).exists() || dir.join(MANIFEST_FILE).exists()
 }
 
-impl Model {
+impl Yolo {
+    /// Whether `dir` contains the converted model and its LightCraft manifest.
+    pub fn can_load(dir: &Path) -> bool {
+        is_model_dir(dir)
+    }
+
+    /// Whether the directory looks like an incomplete or complete YOLO model installation.
+    pub fn is_candidate_dir(dir: &Path) -> bool {
+        is_candidate_dir(dir)
+    }
+
     /// Load a model exported as a fixed square ONNX graph whose side is the manifest's `image_size`, plus its labels.
     pub fn load(dir: &Path) -> Result<Self> {
         let manifest_path = dir.join(MANIFEST_FILE);
@@ -176,8 +188,8 @@ impl Model {
     /// Run one image through the ONNX graph and cache its detections and mask prototypes.
     pub fn encode(&self, rgb: &[u8], width: usize, height: usize) -> Result<Encoded> {
         let (input, transform) = preprocess(rgb, width, height, self.input_edge)?;
-        let tensor =
-            Tensor::from_shape(&[1, 3, self.input_edge, self.input_edge], &input).map_err(|e| Error::Yolo(format!("could not prepare the image: {e}")))?;
+        let tensor = Tensor::from_shape(&[1, 3, self.input_edge, self.input_edge], &input)
+            .map_err(|e| Error::Yolo(format!("could not prepare the image: {e}")))?;
         let outputs = self.runner.run(tvec!(tensor.into_tvalue())).map_err(|e| Error::Yolo(format!("YOLO inference failed: {e}")))?;
         if outputs.len() != 2 {
             return Err(Error::Yolo(format!("expected two segmentation outputs, got {}", outputs.len())));
@@ -502,10 +514,8 @@ fn segment_text_for(labels: &[String], encoded: &Encoded, text: &str) -> Result<
 }
 
 fn segment_subject_for(encoded: &Encoded, focus: Option<(f32, f32)>) -> Result<Option<Prediction>> {
-    let matched = encoded
-        .detections
-        .iter()
-        .filter(|detection| focus.is_none() || focus.map_or(false, |(x, y)| mask_logit_at(encoded, detection, x, y) > 0.0));
+    let matched =
+        encoded.detections.iter().filter(|detection| focus.is_none() || focus.map_or(false, |(x, y)| mask_logit_at(encoded, detection, x, y) > 0.0));
     prediction_for(encoded, matched)
 }
 

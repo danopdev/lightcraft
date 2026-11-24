@@ -357,7 +357,7 @@ fn validate_stage(stage: &Path) -> Result<&'static str, String> {
         (false, true) if is_supported_model(stage) => {
             #[cfg(feature = "sam")]
             {
-                lightcraft_segment::yolo::Model::load(stage).map_err(|e| e.to_string())?;
+                lightcraft_segment::Yolo::load(stage).map_err(|e| e.to_string())?;
                 Ok("yolo")
             }
             #[cfg(not(feature = "sam"))]
@@ -368,7 +368,7 @@ fn validate_stage(stage: &Path) -> Result<&'static str, String> {
         (true, false) => Err("the SAM 3 files are incomplete or invalid".into()),
         (false, true) => {
             #[cfg(feature = "sam")]
-            return Err(lightcraft_segment::yolo::Model::load(stage).err().map_or_else(
+            return Err(lightcraft_segment::Yolo::load(stage).err().map_or_else(
                 || "the YOLO segmentation model is invalid".into(),
                 |e| e.to_string(),
             ));

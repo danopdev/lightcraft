@@ -207,7 +207,7 @@ impl Segmenter {
     pub fn installed(&self) -> bool {
         #[cfg(feature = "sam")]
         if let Some(dir) = &self.dir {
-            return lightcraft_segment::is_any_model_dir(dir);
+            return lightcraft_segment::can_load(dir);
         }
         false
     }
@@ -215,7 +215,7 @@ impl Segmenter {
     /// Whether the configured local model is a converted YOLO export.
     pub fn is_yolo_model(&self) -> bool {
         #[cfg(feature = "sam")]
-        return self.dir.as_deref().is_some_and(lightcraft_segment::yolo::is_model_dir);
+        return self.dir.as_deref().is_some_and(lightcraft_segment::Yolo::can_load);
         #[cfg(not(feature = "sam"))]
         false
     }
@@ -223,7 +223,7 @@ impl Segmenter {
     /// Whether the configured folder contains at least one YOLO export file.
     pub fn has_yolo_model_candidate(&self) -> bool {
         #[cfg(feature = "sam")]
-        return self.dir.as_deref().is_some_and(lightcraft_segment::yolo::is_candidate_dir);
+        return self.dir.as_deref().is_some_and(lightcraft_segment::Yolo::is_candidate_dir);
         #[cfg(not(feature = "sam"))]
         false
     }
@@ -324,9 +324,9 @@ impl Segmenter {
         }
         #[cfg(feature = "sam")]
         if let Some(dir) = &self.dir
-            && lightcraft_segment::yolo::is_candidate_dir(dir)
+            && lightcraft_segment::Yolo::is_candidate_dir(dir)
         {
-            return if lightcraft_segment::yolo::is_model_dir(dir) {
+            return if lightcraft_segment::Yolo::can_load(dir) {
                 Ok(dir.clone())
             } else {
                 Err(other(&format!("the YOLO model in {} is incomplete; expected model.onnx and lightcraft-yolo.json", dir.display())))
@@ -366,7 +366,7 @@ impl Segmenter {
         }
         #[cfg(feature = "sam")]
         {
-            if lightcraft_segment::yolo::is_candidate_dir(&dir) {
+            if lightcraft_segment::Yolo::is_candidate_dir(&dir) {
                 return Err("YOLO models are installed by offline conversion, not by LightCraft's SAM download".into());
             }
             let mirrors = self.mirrors();

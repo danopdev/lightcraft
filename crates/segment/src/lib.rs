@@ -27,6 +27,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod ai_mask;
 #[cfg(not(target_arch = "wasm32"))]
 mod clip;
 #[cfg(not(target_arch = "wasm32"))]
@@ -49,6 +50,12 @@ mod vit;
 mod weights;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod yolo;
+
+pub use ai_mask::{AiMaskInterface, EncodedImage, can_load};
+#[cfg(not(target_arch = "wasm32"))]
+pub use ai_mask::{load_model, load_model_cpu, load_model_on};
+#[cfg(not(target_arch = "wasm32"))]
+pub use yolo::Yolo;
 
 use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
@@ -101,10 +108,7 @@ pub fn is_model_dir(dir: &Path) -> bool {
 
 /// Whether `dir` contains any supported segmentation model.
 pub fn is_any_model_dir(dir: &Path) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    return is_model_dir(dir) || yolo::is_model_dir(dir);
-    #[cfg(target_arch = "wasm32")]
-    is_model_dir(dir)
+    can_load(dir)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -153,6 +157,11 @@ pub struct Prediction {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Sam3 {
+    /// Whether `dir` contains the SAM 3 model files.
+    pub fn can_load(dir: &Path) -> bool {
+        is_model_dir(dir)
+    }
+
     /// Load from a directory holding `model.safetensors` (the `facebook/sam3` checkpoint in
     /// Hugging Face format), `vocab.json` and `merges.txt`.
     pub fn load(dir: &Path) -> Result<Self> {
