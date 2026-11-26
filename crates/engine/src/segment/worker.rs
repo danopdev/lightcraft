@@ -1,4 +1,4 @@
-//! The SAM 3 worker thread: it owns the model and the last encoded photo, and runs every
+//! The AI mask worker thread: it owns the model and the last encoded photo, and runs every
 //! request (load, render the model input, encode, clicks, descriptions, detail passes) in
 //! turn. The session only sends jobs and receives outcomes over channels, so no thread ever
 //! waits on a lock the model holds, and the UI thread never runs the model.
@@ -24,10 +24,11 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
 use lightcraft_develop::SegMask;
-use lightcraft_segment::{
-    AiMaskInterface, EncodedImage, Yolo, load_model, load_model_cpu,
-    remote::{self, Operation, Request},
-};
+#[cfg(feature = "yolo")]
+use lightcraft_segment::Yolo;
+#[cfg(feature = "sam")]
+use lightcraft_segment::remote::{self, Operation, Request};
+use lightcraft_segment::{AiMaskInterface, EncodedImage, load_model, load_model_cpu};
 
 use super::{Input, Prompt, Tag};
 use crate::media::RenderJob;
@@ -109,7 +110,7 @@ impl Placement {
             return Placement::Cpu;
         }
         if let Some(why) = lightcraft_gpu::env_off_reason() {
-            log::info!("SAM 3 runs on the CPU ({why})");
+            log::info!("AI mask model runs on the CPU ({why})");
             return Placement::Cpu;
         }
         Placement::Gpu
@@ -243,7 +244,7 @@ impl Worker {
         // (re)start the thread
         let (tx, rx) = mpsc::channel();
         let shared = self.shared.clone();
-        match std::thread::Builder::new().name("sam3".into()).spawn(move || run(&rx, &shared, IDLE_UNLOAD, Placement::initial())) {
+        match std::thread::Builder::new().name("ai-mask".into()).spawn(move || run(&rx, &shared, IDLE_UNLOAD, Placement::initial())) {
             Ok(t) => {
                 self.thread = Some(t);
                 self.tx = Some(tx.clone());
@@ -262,7 +263,25 @@ impl Worker {
 struct State {
     model: Option<(PathBuf, Box<dyn AiMaskInterface>)>,
     cache: Option<(u64, Box<dyn EncodedImage>)>,
+    #[cfg(feature = "sam")]
     remote: Option<remote::Client>,
+}
+
+fn is_yolo_model(dir: &std::path::Path) -> bool {
+    #[cfg(feature = "yolo")]
+    return Yolo::can_load(dir);
+    #[cfg(not(feature = "yolo"))]
+    {
+        let _ = dir;
+        false
+    }
+}
+
+fn remote_endpoint() -> Option<String> {
+    #[cfg(feature = "sam")]
+    return remote::configured();
+    #[cfg(not(feature = "sam"))]
+    None
 }
 
 /// Whether `later` makes `job` pointless (it asks for the same selection again).
@@ -283,10 +302,10 @@ fn run(rx: &mpsc::Receiver<Job>, shared: &Shared, idle: Duration, mut placement:
             match rx.recv_timeout(idle) {
                 Ok(j) => queue.push_back(j),
                 Err(RecvTimeoutError::Timeout) => {
-                    if state.model.is_some() || state.remote.is_some() {
+                    if state.model.is_some() || remote_is_loaded(&state) {
                         state = State::default();
                         shared.loaded.store(false, Ordering::SeqCst);
-                        log::info!("SAM 3 unloaded after {} minutes without use", idle.as_secs() / 60);
+                        log::info!("AI mask model unloaded after {} minutes without use", idle.as_secs() / 60);
                     }
                     continue;
                 }
@@ -307,8 +326,8 @@ fn run(rx: &mpsc::Receiver<Job>, shared: &Shared, idle: Duration, mut placement:
             continue;
         }
         // what a retry on the CPU needs (running the job takes them)
-        let retry = (placement == Placement::Gpu && remote::configured().is_none() && !Yolo::can_load(&job.dir))
-            .then(|| (job.kind.clone(), job.render.clone()));
+        let retry =
+            (placement == Placement::Gpu && remote_endpoint().is_none() && !is_yolo_model(&job.dir)).then(|| (job.kind.clone(), job.render.clone()));
         let mut result = attempt(&mut state, shared, &mut job, placement);
         let mut notice = None;
         let gpu_failed = match &result {
@@ -318,19 +337,19 @@ fn run(rx: &mpsc::Receiver<Job>, shared: &Shared, idle: Duration, mut placement:
         if let (Some(why), Some((kind, render))) = (gpu_failed, retry) {
             // the GPU may be the cause (e.g. a kernel its compiler can't build, issue #1974): free
             // the model there and try once on the CPU
-            log::warn!("SAM 3 failed on the GPU ({why}); trying the CPU");
+            log::warn!("AI mask model failed on the GPU ({why}); trying the CPU");
             state = State::default();
             (job.kind, job.render) = (kind, render);
             match attempt(&mut state, shared, &mut job, Placement::Cpu) {
                 Ok(r) => {
-                    log::warn!("SAM 3 runs on the CPU from now on: it failed on the GPU and works on the CPU");
+                    log::warn!("AI mask model runs on the CPU from now on: it failed on the GPU and works on the CPU");
                     placement = Placement::Cpu;
                     notice = Some(GPU_FAILED.to_string());
                     result = Ok(r);
                 }
                 Err(e) => {
                     // the CPU fails too, so the GPU isn't the cause: the next job uses it again
-                    log::warn!("SAM 3 failed on the CPU too: {}", e.message());
+                    log::warn!("AI mask model failed on the CPU too: {}", e.message());
                     state = State::default();
                 }
             }
@@ -339,9 +358,19 @@ fn run(rx: &mpsc::Receiver<Job>, shared: &Shared, idle: Duration, mut placement:
         if result.is_err() && !is_detail {
             state.cache = None;
         }
-        shared.loaded.store(state.model.is_some() || state.remote.is_some(), Ordering::SeqCst);
+        shared.loaded.store(state.model.is_some() || remote_is_loaded(&state), Ordering::SeqCst);
         drop(done);
         let _ = job.reply.send(Outcome { tag: job.tag, result, superseded: false, notice });
+    }
+}
+
+fn remote_is_loaded(state: &State) -> bool {
+    #[cfg(feature = "sam")]
+    return state.remote.is_some();
+    #[cfg(not(feature = "sam"))]
+    {
+        let _ = state;
+        false
     }
 }
 
@@ -352,7 +381,7 @@ fn attempt(state: &mut State, shared: &Shared, job: &mut Job, placement: Placeme
         Ok(r) => r,
         Err(p) => {
             let why = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_default();
-            log::error!("AI segmentation model panicked: {why}");
+            log::error!("AI mask model panicked: {why}");
             // don't trust what the model kept: load it again next time
             *state = State::default();
             Err(Failure::Model("the AI model failed unexpectedly (it will be reloaded on the next try)".into()))
@@ -376,7 +405,7 @@ fn model<'a>(
             Placement::Gpu => load_model(dir)?,
             Placement::Cpu => load_model_cpu(dir)?,
         };
-        log::info!("{} segmentation model loaded in {:?}", m.name(), t.elapsed());
+        log::info!("{} AI mask model loaded in {:?}", m.name(), t.elapsed());
         state.model = Some((dir.to_path_buf(), m));
         shared.loaded.store(true, Ordering::SeqCst);
     }
@@ -430,6 +459,7 @@ fn encoded<'a>(
     }
 }
 
+#[cfg(feature = "sam")]
 fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str) -> Result<Option<SegMask>, String> {
     let _busy = Flag::raise(&shared.encoding);
     if state.remote.is_none() {
@@ -479,14 +509,17 @@ fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str)
 }
 
 fn run_job(state: &mut State, shared: &Shared, job: &mut Job, placement: Placement) -> Result<Option<SegMask>, Failure> {
-    if let Some(endpoint) = remote::configured()
-        && !Yolo::can_load(&job.dir)
+    #[cfg(feature = "sam")]
     {
-        let result = remote_job(state, shared, job, &endpoint);
-        if result.is_err() {
-            state.remote = None;
+        if let Some(endpoint) = remote::configured()
+            && !is_yolo_model(&job.dir)
+        {
+            let result = remote_job(state, shared, job, &endpoint);
+            if result.is_err() {
+                state.remote = None;
+            }
+            return result.map_err(|e| Failure::Other(format!("Remote SAM 3 failed: {e}. Check the worker and SSH tunnel, then retry.")));
         }
-        return result.map_err(|e| Failure::Other(format!("Remote SAM 3 failed: {e}. Check the worker and SSH tunnel, then retry.")));
     }
     let side = lightcraft_segment::MASK_SIDE;
     match std::mem::replace(&mut job.kind, Kind::Prepare) {

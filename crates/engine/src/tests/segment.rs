@@ -1,6 +1,6 @@
-//! AI masks without the SAM 3 model (it is never required): every request is a clear error that
+//! AI masks without a model (it is never required): every request is a clear error that
 //! comes back at once, nothing waits on the network or the model, a damaged model is an error
-//! (not a crash or a stuck "busy"), and the SAM 3 download proceeds without extra consent prompts.
+//! (not a crash or a stuck "busy"), and SAM 3 downloads proceed without extra consent prompts.
 //! No test touches the internet: downloads go to a local server.
 
 use std::time::{Duration, Instant};
@@ -49,15 +49,16 @@ fn status_and_model_commands_without_the_model() {
     assert_eq!(st["available"], Segmenter::AVAILABLE);
     assert_eq!(st["installed"], false);
     assert_eq!(st["download"]["running"], false);
-    assert!(st["license"].as_str().unwrap().contains("SAM License"));
+    assert_eq!(st["license"].as_str().is_some(), cfg!(feature = "sam"));
+    if !cfg!(feature = "sam") {
+        assert!(s.execute("segment.model.download", &json!({})).is_err());
+        assert_eq!(s.execute("segment.model.cancel", &json!({})).unwrap()["cancelled"], false);
+        return;
+    }
     // the model download is treated as accepted and fails only if no model folder is configured
     let e = s.execute("segment.model.download", &json!({})).unwrap_err().to_string();
     assert!(e.contains("no folder"), "{e}");
     assert_eq!(s.execute("segment.model.cancel", &json!({})).unwrap()["cancelled"], false);
-    if !Segmenter::AVAILABLE {
-        assert!(s.execute("segment.model.download", &json!({"acknowledged": true})).is_err());
-        return;
-    }
     // no folder, then no download location: clear errors, nothing started
     let e = s.execute("segment.model.download", &json!({"acknowledged": true})).unwrap_err().to_string();
     assert!(e.contains("no folder"), "{e}");
@@ -84,7 +85,7 @@ fn managed_segmentation_models_can_be_listed_selected_and_removed() {
     let mut s = Session::with_demo();
     s.segmenter.models_dir = Some(store.clone());
     let paths = ["model.safetensors", "vocab.json", "merges.txt"].map(|name| source.join(name).display().to_string());
-    let installed = s.execute("segment.models.install", &json!({"paths": paths})).unwrap();
+    let installed = s.execute("segment.models.install", &json!({"paths": paths, "acknowledgedSam": true})).unwrap();
     let id = installed["id"].as_str().unwrap();
     assert_eq!(installed["kind"], "sam3");
     assert_eq!(s.execute("segment.models.list", &json!({})).unwrap()["models"][0]["selected"], false);
@@ -180,14 +181,16 @@ fn background_requests_never_wait_and_failures_come_back_as_messages() {
         let t = Instant::now();
         let e = s.execute(cmd, &p).unwrap_err().to_string();
         assert!(t.elapsed() < Duration::from_millis(500), "{cmd}");
-        if Segmenter::AVAILABLE {
+        if cfg!(feature = "sam") {
             assert!(e.starts_with(NOT_INSTALLED), "{cmd}: {e}");
+        } else if cfg!(feature = "yolo") {
+            assert!(e.contains("YOLO"), "{cmd}: {e}");
         } else {
             assert!(e.contains("not available"), "{cmd}: {e}");
         }
     }
     assert!(s.develop_of(id).unwrap().masks.is_empty());
-    if !Segmenter::AVAILABLE {
+    if !cfg!(feature = "sam") {
         return;
     }
     // a model folder whose weights are damaged
@@ -223,6 +226,9 @@ fn waiting_requests_with_a_damaged_model_are_errors() {
     if !Segmenter::AVAILABLE {
         return;
     }
+    if !cfg!(feature = "sam") {
+        return;
+    }
     let mut s = Session::with_demo();
     let id = s.active().unwrap();
     let dir = damaged_model("damaged-wait");
@@ -245,6 +251,9 @@ fn waiting_requests_with_a_damaged_model_are_errors() {
 #[test]
 fn object_clicks_are_capped() {
     if !Segmenter::AVAILABLE {
+        return;
+    }
+    if !cfg!(feature = "sam") {
         return;
     }
     let mut s = Session::with_demo();
@@ -276,6 +285,9 @@ fn object_clicks_are_capped() {
 #[test]
 fn background_object_clicks_over_the_cap_are_refused_before_queueing() {
     if !Segmenter::AVAILABLE {
+        return;
+    }
+    if !cfg!(feature = "sam") {
         return;
     }
     let mut s = Session::with_demo();
@@ -341,7 +353,7 @@ fn a_running_model_download_shows_in_activity_and_cancels() {
     let _ = std::fs::remove_file(&mirrors);
 }
 
-/// Frontends decide on the error's kind, not its words (#1046): a missing model is
+/// Frontends decide on the error's kind, not its words (#1046): SAM's missing model is
 /// `ModelMissing(Sam3)` whether the app queues requests (background) or a command waits (CLI, MCP);
 /// a build without AI masks is not a missing model (there is nothing to download).
 #[test]
@@ -355,7 +367,7 @@ fn a_missing_model_is_model_missing_by_kind() {
             [("mask.add", json!({"kind": "object"})), ("mask.add", json!({"kind": "prompt", "text": "sky"})), ("segment.prepare", json!({}))]
         {
             let e = s.execute(cmd, &p).unwrap_err();
-            if Segmenter::AVAILABLE {
+            if cfg!(feature = "sam") {
                 assert_eq!(e.kind(), ErrorKind::ModelMissing(AiModel::Sam3), "{cmd} (background {background}): {e}");
                 assert!(e.to_string().starts_with(NOT_INSTALLED), "the message is unchanged: {e}");
             } else {

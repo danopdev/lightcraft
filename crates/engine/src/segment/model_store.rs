@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 const SAM_WEIGHTS: &str = "model.safetensors";
 const YOLO_MODEL: &str = "model.onnx";
 const YOLO_MANIFEST: &str = "lightcraft-yolo.json";
+#[cfg(feature = "sam")]
 const MAX_SAM_FILE_BYTES: u64 = 8 << 30;
 const MAX_TOTAL_BYTES: u64 = 9 << 30;
 const MAX_YOLO_FILE_BYTES: u64 = 1 << 30;
@@ -37,16 +38,19 @@ pub fn valid_id(id: &str) -> bool {
 
 pub fn is_supported_model(dir: &Path) -> bool {
     if is_sam_layout(dir) {
+        #[cfg(feature = "sam")]
         return ["model.safetensors", "vocab.json", "merges.txt"]
             .iter()
             .all(|name| fs::metadata(dir.join(name)).is_ok_and(|m| m.is_file() && m.len() > 0 && m.len() <= MAX_SAM_FILE_BYTES));
+        #[cfg(not(feature = "sam"))]
+        return false;
     }
     if is_yolo_layout(dir) {
-        #[cfg(feature = "sam")]
+        #[cfg(feature = "yolo")]
         return [YOLO_MODEL, YOLO_MANIFEST]
             .iter()
             .all(|name| fs::metadata(dir.join(name)).is_ok_and(|m| m.is_file() && m.len() > 0 && m.len() <= file_limit(name)));
-        #[cfg(not(feature = "sam"))]
+        #[cfg(not(feature = "yolo"))]
         return false;
     }
     false
@@ -122,7 +126,9 @@ pub fn install(store: &Path, sources: &[String], acknowledged_sam: bool) -> Resu
     }
 
     let kind = validate_stage(&stage)?;
-    let _ = acknowledged_sam;
+    if kind == "sam3" && !acknowledged_sam {
+        return Err("acknowledge the SAM License before installing SAM 3".into());
+    }
 
     fs::create_dir_all(store).map_err(|e| format!("could not create {}: {e}", store.display()))?;
     let source_name = if kind == "sam3" { "sam3".to_string() } else { source_name(&paths) };
@@ -355,24 +361,29 @@ fn validate_stage(stage: &Path) -> Result<&'static str, String> {
     match (sam, yolo) {
         (true, false) if is_supported_model(stage) => Ok("sam3"),
         (false, true) if is_supported_model(stage) => {
-            #[cfg(feature = "sam")]
+            #[cfg(feature = "yolo")]
             {
                 lightcraft_segment::Yolo::load(stage).map_err(|e| e.to_string())?;
                 Ok("yolo")
             }
-            #[cfg(not(feature = "sam"))]
+            #[cfg(not(feature = "yolo"))]
             {
                 Err("this build cannot validate YOLO segmentation models".into())
             }
         }
-        (true, false) => Err("the SAM 3 files are incomplete or invalid".into()),
-        (false, true) => {
+        (true, false) => {
             #[cfg(feature = "sam")]
+            return Err("the SAM 3 files are incomplete or invalid".into());
+            #[cfg(not(feature = "sam"))]
+            Err("this build cannot validate SAM 3 segmentation models".into())
+        }
+        (false, true) => {
+            #[cfg(feature = "yolo")]
             return Err(lightcraft_segment::Yolo::load(stage).err().map_or_else(
                 || "the YOLO segmentation model is invalid".into(),
                 |e| e.to_string(),
             ));
-            #[cfg(not(feature = "sam"))]
+            #[cfg(not(feature = "yolo"))]
             Err("this build cannot validate YOLO segmentation models".into())
         }
         (true, true) => Err("choose a folder or archive containing only one model".into()),
@@ -394,6 +405,7 @@ fn canonical_file_name(name: &str) -> Option<&'static str> {
 
 fn file_limit(name: &str) -> u64 {
     match name {
+        #[cfg(feature = "sam")]
         SAM_WEIGHTS => MAX_SAM_FILE_BYTES,
         YOLO_MODEL => MAX_YOLO_FILE_BYTES,
         _ => 16 << 20,
@@ -441,7 +453,9 @@ pub fn row(model: &Model, selected: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "sam")]
     use std::io::Write;
+    #[cfg(feature = "sam")]
     use zip::write::SimpleFileOptions;
 
     fn temp(tag: &str) -> PathBuf {
@@ -451,12 +465,14 @@ mod tests {
         path
     }
 
+    #[cfg(feature = "sam")]
     fn sam_files(dir: &Path) {
         fs::write(dir.join(SAM_WEIGHTS), b"synthetic weights").expect("write weights");
         fs::write(dir.join("vocab.json"), b"{}").expect("write vocabulary");
         fs::write(dir.join("merges.txt"), b"merge").expect("write merges");
     }
 
+    #[cfg(feature = "sam")]
     #[test]
     fn installs_sam_bundle_only_after_license_acceptance_and_persists_selection() {
         let base = temp("sam");
@@ -484,6 +500,7 @@ mod tests {
         let _ = fs::remove_dir_all(base);
     }
 
+    #[cfg(feature = "sam")]
     #[test]
     fn installs_a_model_selected_as_a_folder() {
         let base = temp("folder");
@@ -498,6 +515,7 @@ mod tests {
         let _ = fs::remove_dir_all(base);
     }
 
+    #[cfg(feature = "sam")]
     #[test]
     fn installs_sam_bundle_from_a_zip_and_rejects_traversal() {
         let base = temp("zip");
@@ -539,7 +557,18 @@ mod tests {
         let _ = fs::remove_dir_all(base);
     }
 
-    #[cfg(feature = "sam")]
+    #[cfg(not(feature = "sam"))]
+    #[test]
+    fn refuses_sam_models_when_the_feature_is_disabled() {
+        let base = temp("disabled-sam");
+        fs::write(base.join(SAM_WEIGHTS), b"weights").expect("write weights");
+        fs::write(base.join("vocab.json"), b"{}").expect("write vocabulary");
+        fs::write(base.join("merges.txt"), b"merge").expect("write merges");
+        assert!(validate_stage(&base).unwrap_err().contains("cannot validate SAM 3"));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[cfg(feature = "yolo")]
     #[test]
     fn refuses_yolo_files_that_are_not_loadable_onnx_models() {
         let base = temp("invalid-yolo");

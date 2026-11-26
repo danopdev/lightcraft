@@ -1,9 +1,9 @@
-//! AI masks: Object (clicks) and Describe (text) selections computed with SAM 3
-//! (`lightcraft-segment`, cargo feature `sam`; the desktop app enables it).
+//! AI masks: Object (clicks) and Describe (text) selections computed with SAM 3 or YOLO
+//! (`lightcraft-segment`, cargo features `sam` and `yolo`; the desktop app enables both).
 //!
-//! **Nothing requires the model.** It is not part of LightCraft (SAM License); the user
-//! downloads it when they first use an AI mask and agree to (`segment.model.download`), or
-//! puts the files in the model folder themselves. Without it, AI mask requests fail with a
+//! **Nothing requires a model.** Models are not part of LightCraft; the user downloads SAM 3
+//! when they first use an AI mask and agree to (`segment.model.download`), or installs a
+//! converted YOLO model. Without a supported model, AI mask requests fail with a
 //! clear "not installed" error; renders, exports and every other feature never touch it
 //! (stored segmentations are plain data in the develop settings).
 //!
@@ -19,7 +19,7 @@
 mod download;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod model_store;
-#[cfg(feature = "sam")]
+#[cfg(any(feature = "sam", feature = "yolo"))]
 mod worker;
 
 use std::path::PathBuf;
@@ -40,7 +40,7 @@ pub const LICENSE_URL: &str = "https://github.com/facebookresearch/sam3/blob/mai
 /// How errors about a missing model start (frontends decide on [`crate::ErrorKind::ModelMissing`], not on this text).
 pub const NOT_INSTALLED: &str = "The SAM 3 model is not installed";
 /// Longest a waiting command (CLI, MCP) waits for the model (loading on a CPU can take minutes).
-#[cfg_attr(not(feature = "sam"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "sam", feature = "yolo")), allow(dead_code))]
 const WAIT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 /// Most clicks one Object selection takes (the model's prompt grows with each).
 pub const MAX_CLICKS: usize = 64;
@@ -54,7 +54,7 @@ pub struct Click {
 
 /// What a request's result is for (how [`Session::segment_poll`] applies it).
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(not(feature = "sam"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "sam", feature = "yolo")), allow(dead_code))]
 pub(crate) enum Tag {
     /// A command waiting for the result itself.
     Wait,
@@ -72,7 +72,7 @@ pub(crate) enum Tag {
 }
 
 /// The model input: 8-bit RGB.
-#[cfg_attr(not(feature = "sam"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "sam", feature = "yolo")), allow(dead_code))]
 pub(crate) struct Input {
     rgb: Vec<u8>,
     w: usize,
@@ -81,7 +81,7 @@ pub(crate) struct Input {
 
 /// What a detail pass re-runs.
 #[derive(Clone)]
-#[cfg_attr(not(feature = "sam"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "sam", feature = "yolo")), allow(dead_code))]
 pub(crate) enum Prompt {
     Clicks(Vec<Click>),
     Text(String),
@@ -122,9 +122,9 @@ pub struct DownloadStatus {
     pub finished: bool,
 }
 
-/// The model (on its worker thread), the download, and AI mask requests in flight.
+/// The selected model, its worker thread and any model download.
 pub struct Segmenter {
-    /// Where the `facebook/sam3` files live (set by the app; `None`: no AI masks).
+    /// Where the active segmentation model lives (set by the app; `None`: no AI masks).
     pub dir: Option<PathBuf>,
     /// Where user-installed segmentation models live.
     pub models_dir: Option<PathBuf>,
@@ -135,15 +135,15 @@ pub struct Segmenter {
     pub background: bool,
     pending: Option<PendingClicks>,
     messages: Vec<String>,
-    #[cfg(feature = "sam")]
+    #[cfg(any(feature = "sam", feature = "yolo"))]
     worker: worker::Worker,
     #[cfg(feature = "sam")]
     download: download::Downloader,
-    #[cfg(feature = "sam")]
+    #[cfg(any(feature = "sam", feature = "yolo"))]
     results: (std::sync::mpsc::Sender<worker::Outcome>, std::sync::mpsc::Receiver<worker::Outcome>),
 }
 
-// (derivable only without the `sam` feature: the results channel has no Default)
+// The results channel has no Default.
 #[allow(clippy::derivable_impls)]
 impl Default for Segmenter {
     fn default() -> Self {
@@ -154,11 +154,11 @@ impl Default for Segmenter {
             background: false,
             pending: None,
             messages: Vec::new(),
-            #[cfg(feature = "sam")]
+            #[cfg(any(feature = "sam", feature = "yolo"))]
             worker: worker::Worker::default(),
             #[cfg(feature = "sam")]
             download: download::Downloader::default(),
-            #[cfg(feature = "sam")]
+            #[cfg(any(feature = "sam", feature = "yolo"))]
             results: std::sync::mpsc::channel(),
         }
     }
@@ -166,13 +166,16 @@ impl Default for Segmenter {
 
 impl Segmenter {
     /// Whether this build can compute AI masks at all.
-    pub const AVAILABLE: bool = cfg!(feature = "sam");
+    pub const AVAILABLE: bool = cfg!(any(feature = "sam", feature = "yolo"));
 
     /// Select a user-installed model, or clear the selection. Environment overrides stay authoritative.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn select_model(&mut self, id: Option<&str>) -> Result<(), String> {
         if crate::config::segmentation_model_override_set() {
+            #[cfg(feature = "sam")]
             return Err("the active model is fixed by LIGHTCRAFT_SEGMENTATION_MODEL_DIR or LIGHTCRAFT_SAM3_DIR".into());
+            #[cfg(not(feature = "sam"))]
+            return Err("the active model is fixed by LIGHTCRAFT_SEGMENTATION_MODEL_DIR".into());
         }
         let store = self.models_dir.as_deref().ok_or("this build has nowhere to keep segmentation models")?;
         let selected = match id {
@@ -192,7 +195,16 @@ impl Segmenter {
                 None
             }
         };
-        self.dir = selected.or_else(crate::config::default_sam3_dir);
+        self.dir = selected.or({
+            #[cfg(feature = "sam")]
+            {
+                crate::config::default_sam3_dir()
+            }
+            #[cfg(not(feature = "sam"))]
+            {
+                None
+            }
+        });
         Ok(())
     }
 
@@ -205,26 +217,35 @@ impl Segmenter {
 
     /// Whether the local model files are in place.
     pub fn installed(&self) -> bool {
-        #[cfg(feature = "sam")]
+        #[cfg(any(feature = "sam", feature = "yolo"))]
         if let Some(dir) = &self.dir {
-            return lightcraft_segment::can_load(dir);
+            let mut can_load = false;
+            #[cfg(feature = "sam")]
+            {
+                can_load |= lightcraft_segment::Sam3::can_load(dir);
+            }
+            #[cfg(feature = "yolo")]
+            {
+                can_load |= lightcraft_segment::Yolo::can_load(dir);
+            }
+            return can_load;
         }
         false
     }
 
     /// Whether the configured local model is a converted YOLO export.
     pub fn is_yolo_model(&self) -> bool {
-        #[cfg(feature = "sam")]
+        #[cfg(feature = "yolo")]
         return self.dir.as_deref().is_some_and(lightcraft_segment::Yolo::can_load);
-        #[cfg(not(feature = "sam"))]
+        #[cfg(not(feature = "yolo"))]
         false
     }
 
     /// Whether the configured folder contains at least one YOLO export file.
     pub fn has_yolo_model_candidate(&self) -> bool {
-        #[cfg(feature = "sam")]
+        #[cfg(feature = "yolo")]
         return self.dir.as_deref().is_some_and(lightcraft_segment::Yolo::is_candidate_dir);
-        #[cfg(not(feature = "sam"))]
+        #[cfg(not(feature = "yolo"))]
         false
     }
 
@@ -240,38 +261,41 @@ impl Segmenter {
                 .map(|metadata| Some(metadata.len()))
                 .map_err(|error| format!("could not read YOLO model size at {}: {error}", path.display()));
         }
-        Ok(Some(MODEL_BYTES))
+        #[cfg(feature = "sam")]
+        return Ok(Some(MODEL_BYTES));
+        #[cfg(not(feature = "sam"))]
+        Ok(None)
     }
 
     /// Whether requests are queued or running (loading, analyzing the photo, a click…).
     pub fn busy(&self) -> bool {
-        #[cfg(feature = "sam")]
+        #[cfg(any(feature = "sam", feature = "yolo"))]
         return self.worker.pending() > 0;
-        #[cfg(not(feature = "sam"))]
+        #[cfg(not(any(feature = "sam", feature = "yolo")))]
         false
     }
 
     /// Whether the slow part runs now: loading the model or analyzing a photo.
     pub fn analyzing(&self) -> bool {
-        #[cfg(feature = "sam")]
+        #[cfg(any(feature = "sam", feature = "yolo"))]
         return self.worker.encoding();
-        #[cfg(not(feature = "sam"))]
+        #[cfg(not(any(feature = "sam", feature = "yolo")))]
         false
     }
 
     /// Whether a zoomed-in detail pass is queued or running.
     pub fn detail_busy(&self) -> bool {
-        #[cfg(feature = "sam")]
+        #[cfg(any(feature = "sam", feature = "yolo"))]
         return self.worker.detail() > 0;
-        #[cfg(not(feature = "sam"))]
+        #[cfg(not(any(feature = "sam", feature = "yolo")))]
         false
     }
 
     /// Whether the model is in memory (it is unloaded after a while without use).
     pub fn loaded(&self) -> bool {
-        #[cfg(feature = "sam")]
+        #[cfg(any(feature = "sam", feature = "yolo"))]
         return self.worker.loaded();
-        #[cfg(not(feature = "sam"))]
+        #[cfg(not(any(feature = "sam", feature = "yolo")))]
         false
     }
 
@@ -322,7 +346,7 @@ impl Segmenter {
         if !Self::AVAILABLE {
             return Err(other("AI masks are not available in this build"));
         }
-        #[cfg(feature = "sam")]
+        #[cfg(feature = "yolo")]
         if let Some(dir) = &self.dir
             && lightcraft_segment::Yolo::is_candidate_dir(dir)
         {
@@ -336,22 +360,32 @@ impl Segmenter {
         if lightcraft_segment::remote::configured().is_some() {
             return Ok(PathBuf::new());
         }
-        let dir = self.dir.clone().ok_or_else(|| other("no folder is set for the SAM 3 model"))?;
+        let dir = self.dir.clone().ok_or_else(|| {
+            #[cfg(feature = "sam")]
+            return other("no folder is set for the SAM 3 model");
+            #[cfg(not(feature = "sam"))]
+            other("no folder is set for a YOLO model")
+        })?;
         if self.installed() {
             return Ok(dir);
         }
-        let d = self.download_status();
-        let msg = if d.running {
-            let pct = d.done.saturating_mul(100).checked_div(d.total).unwrap_or(0);
-            format!("{NOT_INSTALLED} yet: it is downloading ({pct} %).")
-        } else {
-            format!(
-                "{NOT_INSTALLED}. Download it (about {:.1} GB, {LICENSE_NAME}) when LightCraft offers it, with `segment.model.download {{\"acknowledged\": true}}`, or put model.safetensors, vocab.json and merges.txt in {}.",
-                MODEL_BYTES as f64 / 1e9,
-                dir.display()
-            )
-        };
-        Err(crate::EngineError::ModelMissing { model: crate::AiModel::Sam3, msg })
+        #[cfg(feature = "sam")]
+        {
+            let d = self.download_status();
+            let msg = if d.running {
+                let pct = d.done.saturating_mul(100).checked_div(d.total).unwrap_or(0);
+                format!("{NOT_INSTALLED} yet: it is downloading ({pct} %).")
+            } else {
+                format!(
+                    "{NOT_INSTALLED}. Download it (about {:.1} GB, {LICENSE_NAME}) when LightCraft offers it, with `segment.model.download {{\"acknowledged\": true}}`, or put model.safetensors, vocab.json and merges.txt in {}.",
+                    MODEL_BYTES as f64 / 1e9,
+                    dir.display()
+                )
+            };
+            Err(crate::EngineError::ModelMissing { model: crate::AiModel::Sam3, msg })
+        }
+        #[cfg(not(feature = "sam"))]
+        Err(other("no valid YOLO model is installed; install a converted YOLO model in Settings > AI Masks"))
     }
 
     /// Start downloading the model (on a background thread; see `segment.model.download`).
@@ -360,12 +394,18 @@ impl Segmenter {
         if !Self::AVAILABLE {
             return Err("AI masks are not available in this build".into());
         }
-        let dir = self.dir.clone().ok_or("no folder is set for the SAM 3 model")?;
-        if self.installed() {
-            return Ok(false);
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = activity;
+            Err("SAM 3 downloads are not available in this build".into())
         }
         #[cfg(feature = "sam")]
         {
+            let dir = self.dir.clone().ok_or("no folder is set for the SAM 3 model")?;
+            if self.installed() {
+                return Ok(false);
+            }
+            #[cfg(feature = "yolo")]
             if lightcraft_segment::Yolo::is_candidate_dir(&dir) {
                 return Err("YOLO models are installed by offline conversion, not by LightCraft's SAM download".into());
             }
@@ -374,11 +414,6 @@ impl Segmenter {
                 return Err(lightcraft_segment::fetch::no_mirrors_message());
             }
             self.download.start(lightcraft_segment::fetch::SAM3_FILES, mirrors, dir, lightcraft_segment::fetch::options(), activity, "SAM 3")
-        }
-        #[cfg(not(feature = "sam"))]
-        {
-            let _ = (dir, activity);
-            Ok(false)
         }
     }
 
@@ -392,7 +427,7 @@ impl Segmenter {
 }
 
 /// Mix `v` into a 64-bit hash.
-#[cfg_attr(not(feature = "sam"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "sam", feature = "yolo")), allow(dead_code))]
 fn mix(h: u64, v: u64) -> u64 {
     (h ^ v).wrapping_mul(0x0100_0000_01b3).rotate_left(29)
 }
@@ -441,7 +476,7 @@ pub fn detail_region(seg: &SegMask, aspect: f64) -> Option<[f64; 4]> {
 }
 
 /// `shape` without its detail patches (what a detail pass was computed from)
-#[cfg_attr(not(feature = "sam"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "sam", feature = "yolo")), allow(dead_code))]
 fn strip_detail(mut shape: MaskShape) -> MaskShape {
     // (nor its edge setting: moving the slider meanwhile keeps the pass)
     if let MaskShape::Object { detail, edge, .. } | MaskShape::Prompt { detail, edge, .. } = &mut shape {
@@ -460,7 +495,7 @@ impl Session {
     /// and unflipped, and without lens corrections, Upright and Transform. Mask coordinates
     /// (clicks, stored selections) live on the photo before those (`Mask::on_photo`), so a
     /// selection stays on its content when they change, and changing them doesn't ask again.
-    #[cfg_attr(not(feature = "sam"), allow(dead_code))]
+    #[cfg_attr(not(any(feature = "sam", feature = "yolo")), allow(dead_code))]
     pub(crate) fn segment_key(&self, id: PhotoId) -> Option<(u64, lightcraft_develop::DevelopSettings)> {
         let p = self.catalog.photo(id)?;
         let mut d = (*p.develop).clone();
@@ -483,7 +518,7 @@ impl Session {
     }
 
     /// Clicks (in normalized photo coordinates) for the model.
-    #[cfg(feature = "sam")]
+    #[cfg(any(feature = "sam", feature = "yolo"))]
     fn model_clicks(clicks: &[Click]) -> Vec<lightcraft_segment::Click> {
         clicks.iter().map(|c| lightcraft_segment::Click { x: c.at.x as f32, y: c.at.y as f32, positive: c.include }).collect()
     }
@@ -491,7 +526,7 @@ impl Session {
     /// A worker request about photo `id` (the render job for its model input goes along; the
     /// worker runs it only when its cache doesn't hold the photo). `region` renders that part
     /// of the photo, from a source sharp enough for it (detail passes).
-    #[cfg(feature = "sam")]
+    #[cfg(any(feature = "sam", feature = "yolo"))]
     fn segment_job(
         &mut self,
         id: PhotoId,
@@ -533,7 +568,7 @@ impl Session {
     }
 
     /// Send a request and wait for its result (CLI, MCP, tests; or when not in background mode).
-    #[cfg(feature = "sam")]
+    #[cfg(any(feature = "sam", feature = "yolo"))]
     fn segment_wait(&mut self, id: PhotoId, kind: worker::Kind, region: Option<[f64; 4]>) -> Result<Option<SegMask>, String> {
         let (tx, rx) = std::sync::mpsc::channel();
         let job = self.segment_job(id, kind, Tag::Wait, tx, region)?;
@@ -549,7 +584,7 @@ impl Session {
     }
 
     /// Send a request whose result [`Session::segment_poll`] applies.
-    #[cfg(feature = "sam")]
+    #[cfg(any(feature = "sam", feature = "yolo"))]
     fn segment_queue(&mut self, id: PhotoId, kind: worker::Kind, tag: Tag, region: Option<[f64; 4]>) -> Result<(), String> {
         let reply = self.segmenter.results.0.clone();
         let job = self.segment_job(id, kind, tag, reply, region)?;
@@ -560,14 +595,14 @@ impl Session {
     /// click is fast. In background mode it returns at once.
     pub fn segment_prepare(&mut self, id: PhotoId) -> Result<(), String> {
         self.segmenter.model_dir()?;
-        #[cfg(feature = "sam")]
+        #[cfg(any(feature = "sam", feature = "yolo"))]
         {
             if self.segmenter.background {
                 return self.segment_queue(id, worker::Kind::Prepare, Tag::Prepare, None);
             }
             self.segment_wait(id, worker::Kind::Prepare, None)?;
         }
-        #[cfg(not(feature = "sam"))]
+        #[cfg(not(any(feature = "sam", feature = "yolo")))]
         let _ = id;
         Ok(())
     }
@@ -581,11 +616,11 @@ impl Session {
         if clicks.len() > MAX_CLICKS {
             return Err(format!("an Object selection takes at most {MAX_CLICKS} clicks"));
         }
-        #[cfg(feature = "sam")]
+        #[cfg(any(feature = "sam", feature = "yolo"))]
         {
             self.segment_wait(id, worker::Kind::Clicks(Self::model_clicks(clicks)), None)?.ok_or_else(|| "nothing was selected".to_string())
         }
-        #[cfg(not(feature = "sam"))]
+        #[cfg(not(any(feature = "sam", feature = "yolo")))]
         {
             let _ = id;
             Err("AI masks are not available in this build".into())
@@ -600,11 +635,11 @@ impl Session {
         if text.is_empty() {
             return Err("describe what to select".into());
         }
-        #[cfg(feature = "sam")]
+        #[cfg(any(feature = "sam", feature = "yolo"))]
         {
             self.segment_wait(id, worker::Kind::Text(text.to_string()), None)
         }
-        #[cfg(not(feature = "sam"))]
+        #[cfg(not(any(feature = "sam", feature = "yolo")))]
         {
             let _ = id;
             Err("AI masks are not available in this build".into())
@@ -618,7 +653,7 @@ impl Session {
         if hint.is_empty() {
             return Err("click the object to include it first".into());
         }
-        #[cfg(feature = "sam")]
+        #[cfg(any(feature = "sam", feature = "yolo"))]
         {
             let clicks = Self::model_clicks(&clicks_of(&hint, &exclude));
             let tag = Tag::Clicks { photo: id, mask, comp, hint: hint.clone(), exclude: exclude.clone() };
@@ -626,7 +661,7 @@ impl Session {
             self.segmenter.pending = Some(PendingClicks { photo: id, mask, comp, hint, exclude });
             Ok(())
         }
-        #[cfg(not(feature = "sam"))]
+        #[cfg(not(any(feature = "sam", feature = "yolo")))]
         {
             let _ = (id, mask, comp, exclude);
             Err("AI masks are not available in this build".into())
@@ -641,12 +676,12 @@ impl Session {
         if text.is_empty() {
             return Err("describe what to select".into());
         }
-        #[cfg(feature = "sam")]
+        #[cfg(any(feature = "sam", feature = "yolo"))]
         {
             let tag = Tag::NewPrompt { photo: id, mask, op: op.to_string(), name, text: text.to_string() };
             self.segment_queue(id, worker::Kind::Text(text.to_string()), tag, None)
         }
-        #[cfg(not(feature = "sam"))]
+        #[cfg(not(any(feature = "sam", feature = "yolo")))]
         {
             let _ = (id, mask, op, name);
             Err("AI masks are not available in this build".into())
@@ -660,7 +695,7 @@ impl Session {
     /// before this returns.
     pub(crate) fn segment_subject_later(&mut self, id: PhotoId, mask: u32, comp: usize, point: Point, focus: Option<Point>) -> Result<(), String> {
         self.segmenter.model_dir()?;
-        #[cfg(feature = "sam")]
+        #[cfg(any(feature = "sam", feature = "yolo"))]
         {
             let kind = worker::Kind::Subject { focus: focus.map(|p| (p.x as f32, p.y as f32)) };
             let tag = Tag::Subject { photo: id, mask, comp, point };
@@ -675,7 +710,7 @@ impl Session {
                 None => Ok(()),
             }
         }
-        #[cfg(not(feature = "sam"))]
+        #[cfg(not(any(feature = "sam", feature = "yolo")))]
         {
             let _ = (id, mask, comp, point, focus);
             Err("AI masks are not available in this build".into())
@@ -703,7 +738,7 @@ impl Session {
         let (pw, ph) = (f64::from(p.width.max(1)), f64::from(p.height.max(1)));
         let aspect = if d.orientation.swaps_axes() { ph / pw } else { pw / ph };
         let Some(region) = detail_region(&seg, aspect) else { return Ok(false) };
-        #[cfg(feature = "sam")]
+        #[cfg(any(feature = "sam", feature = "yolo"))]
         {
             let kind = worker::Kind::Detail { prompt, region };
             let tag = Tag::Detail { photo: id, mask, comp, shape: strip_detail(shape) };
@@ -720,7 +755,7 @@ impl Session {
             }
             Ok(true)
         }
-        #[cfg(not(feature = "sam"))]
+        #[cfg(not(any(feature = "sam", feature = "yolo")))]
         {
             let _ = (prompt, region, mask);
             Ok(false)
@@ -730,9 +765,9 @@ impl Session {
     /// Apply finished background requests (to masks that haven't changed since) and collect
     /// their messages. Cheap when nothing is pending: call it every frame.
     pub fn segment_poll(&mut self) -> Polled {
-        #[cfg_attr(not(feature = "sam"), allow(unused_mut))]
+        #[cfg_attr(not(any(feature = "sam", feature = "yolo")), allow(unused_mut))]
         let mut polled = Polled { messages: std::mem::take(&mut self.segmenter.messages), ..Default::default() };
-        #[cfg(feature = "sam")]
+        #[cfg(any(feature = "sam", feature = "yolo"))]
         {
             // (before draining: a worker that is idle now has sent everything)
             let idle = !self.segmenter.busy();
@@ -748,7 +783,7 @@ impl Session {
         polled
     }
 
-    #[cfg(feature = "sam")]
+    #[cfg(any(feature = "sam", feature = "yolo"))]
     fn apply_outcome(&mut self, o: worker::Outcome, polled: &mut Polled) {
         if o.superseded {
             return;
@@ -867,7 +902,7 @@ impl Session {
                 let patch = match o.result {
                     Ok(Some(p)) => p,
                     Ok(None) => return,
-                    Err(e) => return log::warn!("SAM 3 detail pass: {e}"),
+                    Err(e) => return log::warn!("AI mask detail pass: {e}"),
                 };
                 let Some(d) = self.develop_of(photo) else { return };
                 let mut d = (*d).clone();
@@ -892,7 +927,7 @@ impl Session {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "sam")]
+    #[cfg(feature = "yolo")]
     #[test]
     fn incomplete_yolo_export_is_not_reported_as_a_missing_sam_model() {
         let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
@@ -911,7 +946,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    #[cfg(feature = "sam")]
+    #[cfg(any(feature = "sam", feature = "yolo"))]
     #[test]
     fn a_worker_notice_reaches_the_user_with_the_result() {
         // the job after which the model runs on the CPU (the GPU failed) says so
@@ -926,7 +961,7 @@ mod tests {
     /// Find Subject's result: people / animals found become a Describe selection of the waiting
     /// Object (one undo step), not after it was clicked meanwhile; nothing found queues the object
     /// at the point (here: no model, so a message, and the mask still waits).
-    #[cfg(feature = "sam")]
+    #[cfg(any(feature = "sam", feature = "yolo"))]
     #[test]
     fn find_subject_results_fill_the_waiting_mask() {
         use lightcraft_develop::{Mask, MaskComponent, MaskOp};

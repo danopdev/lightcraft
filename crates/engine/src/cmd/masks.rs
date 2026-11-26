@@ -586,6 +586,16 @@ pub fn specs() -> Vec<CommandSpec> {
             |s, _| {
                 let g = &s.segmenter;
                 let size_bytes = g.model_size_bytes().map_err(ai_err)?;
+                #[cfg(feature = "sam")]
+                let sam_license = Some(crate::segment::LICENSE_NAME);
+                #[cfg(not(feature = "sam"))]
+                let sam_license: Option<&str> = None;
+                #[cfg(feature = "sam")]
+                let sam_license_url = Some(crate::segment::LICENSE_URL);
+                #[cfg(not(feature = "sam"))]
+                let sam_license_url: Option<&str> = None;
+                let license = if g.has_yolo_model_candidate() { None } else { sam_license };
+                let license_url = if g.has_yolo_model_candidate() { None } else { sam_license_url };
                 Ok(json!({
                     "available": crate::segment::Segmenter::AVAILABLE,
                     "installed": g.installed(),
@@ -595,8 +605,8 @@ pub fn specs() -> Vec<CommandSpec> {
                     "busy": g.busy(),
                     "analyzing": g.analyzing(),
                     "sizeBytes": size_bytes,
-                    "license": if g.has_yolo_model_candidate() { None } else { Some(crate::segment::LICENSE_NAME) },
-                    "licenseUrl": if g.has_yolo_model_candidate() { None } else { Some(crate::segment::LICENSE_URL) },
+                    "license": license,
+                    "licenseUrl": license_url,
                     "mirrors": g.mirrors().len(),
                     "download": g.download_status(),
                 }))

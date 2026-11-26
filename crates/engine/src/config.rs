@@ -134,8 +134,22 @@ pub fn default_segmentation_models_dir() -> Option<PathBuf> {
 
 /// Whether an environment override takes precedence over a user-selected segmentation model.
 pub fn segmentation_model_override_set() -> bool {
-    std::env::var_os("LIGHTCRAFT_SEGMENTATION_MODEL_DIR").is_some_and(|v| !v.is_empty())
-        || std::env::var_os("LIGHTCRAFT_SAM3_DIR").is_some_and(|v| !v.is_empty())
+    let generic = std::env::var_os("LIGHTCRAFT_SEGMENTATION_MODEL_DIR").is_some_and(|v| !v.is_empty());
+    #[cfg(feature = "sam")]
+    return generic || std::env::var_os("LIGHTCRAFT_SAM3_DIR").is_some_and(|v| !v.is_empty());
+    #[cfg(not(feature = "sam"))]
+    generic
+}
+
+fn default_active_model_dir() -> Option<PathBuf> {
+    let generic = std::env::var_os("LIGHTCRAFT_SEGMENTATION_MODEL_DIR").filter(|v| !v.is_empty()).map(PathBuf::from);
+    if generic.is_some() {
+        return generic;
+    }
+    #[cfg(feature = "sam")]
+    return default_sam3_dir();
+    #[cfg(not(feature = "sam"))]
+    None
 }
 
 /// The selected managed model, if the persisted id still names an installed directory.
@@ -165,18 +179,21 @@ impl Session {
     pub fn with_default_sam3_model(mut self) -> Self {
         self.segmenter.models_dir = default_segmentation_models_dir();
         self.segmenter.dir = if segmentation_model_override_set() {
-            default_sam3_dir()
+            default_active_model_dir()
         } else {
             #[cfg(not(target_arch = "wasm32"))]
             {
-                self.segmenter.models_dir.as_deref().and_then(selected_segmentation_model).or_else(default_sam3_dir)
+                self.segmenter.models_dir.as_deref().and_then(selected_segmentation_model).or_else(default_active_model_dir)
             }
             #[cfg(target_arch = "wasm32")]
             {
-                default_sam3_dir()
+                default_active_model_dir()
             }
         };
-        self.segmenter.mirrors_file = config_dir().map(|d| d.join("models").join("sam3-mirrors.txt"));
+        #[cfg(feature = "sam")]
+        {
+            self.segmenter.mirrors_file = config_dir().map(|d| d.join("models").join("sam3-mirrors.txt"));
+        }
         self
     }
 
