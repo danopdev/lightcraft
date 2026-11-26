@@ -28,7 +28,7 @@ use lightcraft_develop::SegMask;
 use lightcraft_segment::Yolo;
 #[cfg(feature = "sam")]
 use lightcraft_segment::remote::{self, Operation, Request};
-use lightcraft_segment::{AiMaskInterface, EncodedImage, load_model, load_model_cpu};
+use lightcraft_segment::{AiMaskInterface, EncodedImage};
 
 use super::{Input, Prompt, Tag};
 use crate::media::RenderJob;
@@ -401,10 +401,7 @@ fn model<'a>(
         state.cache = None;
         let _busy = Flag::raise(&shared.encoding);
         let t = web_time::Instant::now();
-        let m = match placement {
-            Placement::Gpu => load_model(dir)?,
-            Placement::Cpu => load_model_cpu(dir)?,
-        };
+        let m = super::models::load(dir, placement == Placement::Cpu)?;
         log::info!("{} AI mask model loaded in {:?}", m.name(), t.elapsed());
         state.model = Some((dir.to_path_buf(), m));
         shared.loaded.store(true, Ordering::SeqCst);

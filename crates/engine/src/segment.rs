@@ -19,7 +19,9 @@
 mod download;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod model_store;
-#[cfg(any(feature = "sam", feature = "yolo"))]
+#[cfg(feature = "ai_mask")]
+mod models;
+#[cfg(feature = "ai_mask")]
 mod worker;
 
 use std::path::PathBuf;
@@ -40,7 +42,7 @@ pub const LICENSE_URL: &str = "https://github.com/facebookresearch/sam3/blob/mai
 /// How errors about a missing model start (frontends decide on [`crate::ErrorKind::ModelMissing`], not on this text).
 pub const NOT_INSTALLED: &str = "The SAM 3 model is not installed";
 /// Longest a waiting command (CLI, MCP) waits for the model (loading on a CPU can take minutes).
-#[cfg_attr(not(any(feature = "sam", feature = "yolo")), allow(dead_code))]
+#[cfg_attr(not(feature = "ai_mask"), allow(dead_code))]
 const WAIT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 /// Most clicks one Object selection takes (the model's prompt grows with each).
 pub const MAX_CLICKS: usize = 64;
@@ -54,7 +56,7 @@ pub struct Click {
 
 /// What a request's result is for (how [`Session::segment_poll`] applies it).
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(not(any(feature = "sam", feature = "yolo")), allow(dead_code))]
+#[cfg_attr(not(feature = "ai_mask"), allow(dead_code))]
 pub(crate) enum Tag {
     /// A command waiting for the result itself.
     Wait,
@@ -72,7 +74,7 @@ pub(crate) enum Tag {
 }
 
 /// The model input: 8-bit RGB.
-#[cfg_attr(not(any(feature = "sam", feature = "yolo")), allow(dead_code))]
+#[cfg_attr(not(feature = "ai_mask"), allow(dead_code))]
 pub(crate) struct Input {
     rgb: Vec<u8>,
     w: usize,
@@ -81,7 +83,7 @@ pub(crate) struct Input {
 
 /// What a detail pass re-runs.
 #[derive(Clone)]
-#[cfg_attr(not(any(feature = "sam", feature = "yolo")), allow(dead_code))]
+#[cfg_attr(not(feature = "ai_mask"), allow(dead_code))]
 pub(crate) enum Prompt {
     Clicks(Vec<Click>),
     Text(String),
@@ -135,11 +137,11 @@ pub struct Segmenter {
     pub background: bool,
     pending: Option<PendingClicks>,
     messages: Vec<String>,
-    #[cfg(any(feature = "sam", feature = "yolo"))]
+    #[cfg(feature = "ai_mask")]
     worker: worker::Worker,
     #[cfg(feature = "sam")]
     download: download::Downloader,
-    #[cfg(any(feature = "sam", feature = "yolo"))]
+    #[cfg(feature = "ai_mask")]
     results: (std::sync::mpsc::Sender<worker::Outcome>, std::sync::mpsc::Receiver<worker::Outcome>),
 }
 
@@ -154,11 +156,11 @@ impl Default for Segmenter {
             background: false,
             pending: None,
             messages: Vec::new(),
-            #[cfg(any(feature = "sam", feature = "yolo"))]
+            #[cfg(feature = "ai_mask")]
             worker: worker::Worker::default(),
             #[cfg(feature = "sam")]
             download: download::Downloader::default(),
-            #[cfg(any(feature = "sam", feature = "yolo"))]
+            #[cfg(feature = "ai_mask")]
             results: std::sync::mpsc::channel(),
         }
     }
@@ -166,7 +168,16 @@ impl Default for Segmenter {
 
 impl Segmenter {
     /// Whether this build can compute AI masks at all.
-    pub const AVAILABLE: bool = cfg!(any(feature = "sam", feature = "yolo"));
+    pub const AVAILABLE: bool = {
+        #[cfg(feature = "ai_mask")]
+        {
+            models::AVAILABLE
+        }
+        #[cfg(not(feature = "ai_mask"))]
+        {
+            false
+        }
+    };
 
     /// Select a user-installed model, or clear the selection. Environment overrides stay authoritative.
     #[cfg(not(target_arch = "wasm32"))]
@@ -217,19 +228,9 @@ impl Segmenter {
 
     /// Whether the local model files are in place.
     pub fn installed(&self) -> bool {
-        #[cfg(any(feature = "sam", feature = "yolo"))]
-        if let Some(dir) = &self.dir {
-            let mut can_load = false;
-            #[cfg(feature = "sam")]
-            {
-                can_load |= lightcraft_segment::Sam3::can_load(dir);
-            }
-            #[cfg(feature = "yolo")]
-            {
-                can_load |= lightcraft_segment::Yolo::can_load(dir);
-            }
-            return can_load;
-        }
+        #[cfg(feature = "ai_mask")]
+        return self.dir.as_deref().is_some_and(models::can_load);
+        #[cfg(not(feature = "ai_mask"))]
         false
     }
 
@@ -269,33 +270,33 @@ impl Segmenter {
 
     /// Whether requests are queued or running (loading, analyzing the photo, a click…).
     pub fn busy(&self) -> bool {
-        #[cfg(any(feature = "sam", feature = "yolo"))]
+        #[cfg(feature = "ai_mask")]
         return self.worker.pending() > 0;
-        #[cfg(not(any(feature = "sam", feature = "yolo")))]
+        #[cfg(not(feature = "ai_mask"))]
         false
     }
 
     /// Whether the slow part runs now: loading the model or analyzing a photo.
     pub fn analyzing(&self) -> bool {
-        #[cfg(any(feature = "sam", feature = "yolo"))]
+        #[cfg(feature = "ai_mask")]
         return self.worker.encoding();
-        #[cfg(not(any(feature = "sam", feature = "yolo")))]
+        #[cfg(not(feature = "ai_mask"))]
         false
     }
 
     /// Whether a zoomed-in detail pass is queued or running.
     pub fn detail_busy(&self) -> bool {
-        #[cfg(any(feature = "sam", feature = "yolo"))]
+        #[cfg(feature = "ai_mask")]
         return self.worker.detail() > 0;
-        #[cfg(not(any(feature = "sam", feature = "yolo")))]
+        #[cfg(not(feature = "ai_mask"))]
         false
     }
 
     /// Whether the model is in memory (it is unloaded after a while without use).
     pub fn loaded(&self) -> bool {
-        #[cfg(any(feature = "sam", feature = "yolo"))]
+        #[cfg(feature = "ai_mask")]
         return self.worker.loaded();
-        #[cfg(not(any(feature = "sam", feature = "yolo")))]
+        #[cfg(not(feature = "ai_mask"))]
         false
     }
 
@@ -427,7 +428,7 @@ impl Segmenter {
 }
 
 /// Mix `v` into a 64-bit hash.
-#[cfg_attr(not(any(feature = "sam", feature = "yolo")), allow(dead_code))]
+#[cfg_attr(not(feature = "ai_mask"), allow(dead_code))]
 fn mix(h: u64, v: u64) -> u64 {
     (h ^ v).wrapping_mul(0x0100_0000_01b3).rotate_left(29)
 }
@@ -476,7 +477,7 @@ pub fn detail_region(seg: &SegMask, aspect: f64) -> Option<[f64; 4]> {
 }
 
 /// `shape` without its detail patches (what a detail pass was computed from)
-#[cfg_attr(not(any(feature = "sam", feature = "yolo")), allow(dead_code))]
+#[cfg_attr(not(feature = "ai_mask"), allow(dead_code))]
 fn strip_detail(mut shape: MaskShape) -> MaskShape {
     // (nor its edge setting: moving the slider meanwhile keeps the pass)
     if let MaskShape::Object { detail, edge, .. } | MaskShape::Prompt { detail, edge, .. } = &mut shape {
@@ -495,7 +496,7 @@ impl Session {
     /// and unflipped, and without lens corrections, Upright and Transform. Mask coordinates
     /// (clicks, stored selections) live on the photo before those (`Mask::on_photo`), so a
     /// selection stays on its content when they change, and changing them doesn't ask again.
-    #[cfg_attr(not(any(feature = "sam", feature = "yolo")), allow(dead_code))]
+    #[cfg_attr(not(feature = "ai_mask"), allow(dead_code))]
     pub(crate) fn segment_key(&self, id: PhotoId) -> Option<(u64, lightcraft_develop::DevelopSettings)> {
         let p = self.catalog.photo(id)?;
         let mut d = (*p.develop).clone();
@@ -518,7 +519,7 @@ impl Session {
     }
 
     /// Clicks (in normalized photo coordinates) for the model.
-    #[cfg(any(feature = "sam", feature = "yolo"))]
+    #[cfg(feature = "ai_mask")]
     fn model_clicks(clicks: &[Click]) -> Vec<lightcraft_segment::Click> {
         clicks.iter().map(|c| lightcraft_segment::Click { x: c.at.x as f32, y: c.at.y as f32, positive: c.include }).collect()
     }
@@ -526,7 +527,7 @@ impl Session {
     /// A worker request about photo `id` (the render job for its model input goes along; the
     /// worker runs it only when its cache doesn't hold the photo). `region` renders that part
     /// of the photo, from a source sharp enough for it (detail passes).
-    #[cfg(any(feature = "sam", feature = "yolo"))]
+    #[cfg(feature = "ai_mask")]
     fn segment_job(
         &mut self,
         id: PhotoId,
@@ -568,7 +569,7 @@ impl Session {
     }
 
     /// Send a request and wait for its result (CLI, MCP, tests; or when not in background mode).
-    #[cfg(any(feature = "sam", feature = "yolo"))]
+    #[cfg(feature = "ai_mask")]
     fn segment_wait(&mut self, id: PhotoId, kind: worker::Kind, region: Option<[f64; 4]>) -> Result<Option<SegMask>, String> {
         let (tx, rx) = std::sync::mpsc::channel();
         let job = self.segment_job(id, kind, Tag::Wait, tx, region)?;
@@ -584,7 +585,7 @@ impl Session {
     }
 
     /// Send a request whose result [`Session::segment_poll`] applies.
-    #[cfg(any(feature = "sam", feature = "yolo"))]
+    #[cfg(feature = "ai_mask")]
     fn segment_queue(&mut self, id: PhotoId, kind: worker::Kind, tag: Tag, region: Option<[f64; 4]>) -> Result<(), String> {
         let reply = self.segmenter.results.0.clone();
         let job = self.segment_job(id, kind, tag, reply, region)?;
@@ -595,14 +596,14 @@ impl Session {
     /// click is fast. In background mode it returns at once.
     pub fn segment_prepare(&mut self, id: PhotoId) -> Result<(), String> {
         self.segmenter.model_dir()?;
-        #[cfg(any(feature = "sam", feature = "yolo"))]
+        #[cfg(feature = "ai_mask")]
         {
             if self.segmenter.background {
                 return self.segment_queue(id, worker::Kind::Prepare, Tag::Prepare, None);
             }
             self.segment_wait(id, worker::Kind::Prepare, None)?;
         }
-        #[cfg(not(any(feature = "sam", feature = "yolo")))]
+        #[cfg(not(feature = "ai_mask"))]
         let _ = id;
         Ok(())
     }
@@ -616,11 +617,11 @@ impl Session {
         if clicks.len() > MAX_CLICKS {
             return Err(format!("an Object selection takes at most {MAX_CLICKS} clicks"));
         }
-        #[cfg(any(feature = "sam", feature = "yolo"))]
+        #[cfg(feature = "ai_mask")]
         {
             self.segment_wait(id, worker::Kind::Clicks(Self::model_clicks(clicks)), None)?.ok_or_else(|| "nothing was selected".to_string())
         }
-        #[cfg(not(any(feature = "sam", feature = "yolo")))]
+        #[cfg(not(feature = "ai_mask"))]
         {
             let _ = id;
             Err("AI masks are not available in this build".into())
@@ -635,11 +636,11 @@ impl Session {
         if text.is_empty() {
             return Err("describe what to select".into());
         }
-        #[cfg(any(feature = "sam", feature = "yolo"))]
+        #[cfg(feature = "ai_mask")]
         {
             self.segment_wait(id, worker::Kind::Text(text.to_string()), None)
         }
-        #[cfg(not(any(feature = "sam", feature = "yolo")))]
+        #[cfg(not(feature = "ai_mask"))]
         {
             let _ = id;
             Err("AI masks are not available in this build".into())
@@ -653,7 +654,7 @@ impl Session {
         if hint.is_empty() {
             return Err("click the object to include it first".into());
         }
-        #[cfg(any(feature = "sam", feature = "yolo"))]
+        #[cfg(feature = "ai_mask")]
         {
             let clicks = Self::model_clicks(&clicks_of(&hint, &exclude));
             let tag = Tag::Clicks { photo: id, mask, comp, hint: hint.clone(), exclude: exclude.clone() };
@@ -661,7 +662,7 @@ impl Session {
             self.segmenter.pending = Some(PendingClicks { photo: id, mask, comp, hint, exclude });
             Ok(())
         }
-        #[cfg(not(any(feature = "sam", feature = "yolo")))]
+        #[cfg(not(feature = "ai_mask"))]
         {
             let _ = (id, mask, comp, exclude);
             Err("AI masks are not available in this build".into())
@@ -676,12 +677,12 @@ impl Session {
         if text.is_empty() {
             return Err("describe what to select".into());
         }
-        #[cfg(any(feature = "sam", feature = "yolo"))]
+        #[cfg(feature = "ai_mask")]
         {
             let tag = Tag::NewPrompt { photo: id, mask, op: op.to_string(), name, text: text.to_string() };
             self.segment_queue(id, worker::Kind::Text(text.to_string()), tag, None)
         }
-        #[cfg(not(any(feature = "sam", feature = "yolo")))]
+        #[cfg(not(feature = "ai_mask"))]
         {
             let _ = (id, mask, op, name);
             Err("AI masks are not available in this build".into())
@@ -695,7 +696,7 @@ impl Session {
     /// before this returns.
     pub(crate) fn segment_subject_later(&mut self, id: PhotoId, mask: u32, comp: usize, point: Point, focus: Option<Point>) -> Result<(), String> {
         self.segmenter.model_dir()?;
-        #[cfg(any(feature = "sam", feature = "yolo"))]
+        #[cfg(feature = "ai_mask")]
         {
             let kind = worker::Kind::Subject { focus: focus.map(|p| (p.x as f32, p.y as f32)) };
             let tag = Tag::Subject { photo: id, mask, comp, point };
@@ -710,7 +711,7 @@ impl Session {
                 None => Ok(()),
             }
         }
-        #[cfg(not(any(feature = "sam", feature = "yolo")))]
+        #[cfg(not(feature = "ai_mask"))]
         {
             let _ = (id, mask, comp, point, focus);
             Err("AI masks are not available in this build".into())
@@ -738,7 +739,7 @@ impl Session {
         let (pw, ph) = (f64::from(p.width.max(1)), f64::from(p.height.max(1)));
         let aspect = if d.orientation.swaps_axes() { ph / pw } else { pw / ph };
         let Some(region) = detail_region(&seg, aspect) else { return Ok(false) };
-        #[cfg(any(feature = "sam", feature = "yolo"))]
+        #[cfg(feature = "ai_mask")]
         {
             let kind = worker::Kind::Detail { prompt, region };
             let tag = Tag::Detail { photo: id, mask, comp, shape: strip_detail(shape) };
@@ -755,7 +756,7 @@ impl Session {
             }
             Ok(true)
         }
-        #[cfg(not(any(feature = "sam", feature = "yolo")))]
+        #[cfg(not(feature = "ai_mask"))]
         {
             let _ = (prompt, region, mask);
             Ok(false)
@@ -765,9 +766,9 @@ impl Session {
     /// Apply finished background requests (to masks that haven't changed since) and collect
     /// their messages. Cheap when nothing is pending: call it every frame.
     pub fn segment_poll(&mut self) -> Polled {
-        #[cfg_attr(not(any(feature = "sam", feature = "yolo")), allow(unused_mut))]
+        #[cfg_attr(not(feature = "ai_mask"), allow(unused_mut))]
         let mut polled = Polled { messages: std::mem::take(&mut self.segmenter.messages), ..Default::default() };
-        #[cfg(any(feature = "sam", feature = "yolo"))]
+        #[cfg(feature = "ai_mask")]
         {
             // (before draining: a worker that is idle now has sent everything)
             let idle = !self.segmenter.busy();
@@ -783,7 +784,7 @@ impl Session {
         polled
     }
 
-    #[cfg(any(feature = "sam", feature = "yolo"))]
+    #[cfg(feature = "ai_mask")]
     fn apply_outcome(&mut self, o: worker::Outcome, polled: &mut Polled) {
         if o.superseded {
             return;
@@ -946,7 +947,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    #[cfg(any(feature = "sam", feature = "yolo"))]
+    #[cfg(feature = "ai_mask")]
     #[test]
     fn a_worker_notice_reaches_the_user_with_the_result() {
         // the job after which the model runs on the CPU (the GPU failed) says so
@@ -961,7 +962,7 @@ mod tests {
     /// Find Subject's result: people / animals found become a Describe selection of the waiting
     /// Object (one undo step), not after it was clicked meanwhile; nothing found queues the object
     /// at the point (here: no model, so a message, and the mask still waits).
-    #[cfg(any(feature = "sam", feature = "yolo"))]
+    #[cfg(feature = "ai_mask")]
     #[test]
     fn find_subject_results_fill_the_waiting_mask() {
         use lightcraft_develop::{Mask, MaskComponent, MaskOp};

@@ -5,6 +5,10 @@ pure Rust by `crates/segment` on [candle](https://github.com/huggingface/candle)
 through Metal on macOS, on the CPU elsewhere (for now). If the Mac's GPU can't run it, it runs on
 the CPU (see the worker below).
 
+The engine's `sam` and `yolo` Cargo features each enable the shared `ai_mask` feature.
+Enabling `ai_mask` alone adds no model backend; model detection and loading use only
+the enabled backends. SAM 3 downloads remain specific to the `sam` feature.
+
 **The model is optional.** It is not part of LightCraft, and nothing requires it: without it,
 Object, Describe and Lens Blur's **Find Subject** offer to download it, every other feature (and
 every existing mask, see below) works, and no render, export or command ever waits for it.
